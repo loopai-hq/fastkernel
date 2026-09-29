@@ -12,7 +12,7 @@ stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 pkg=$stage/fastkernel
 mkdir -p "$pkg/engine" dist
-git archive HEAD install server data/head-ranked.u32 LICENSE | tar -x -C "$pkg"
+git archive HEAD install server data/head-ranked.u32 LICENSE NOTICE | tar -x -C "$pkg"
 cp build/splash build/splash.metallib "$pkg/engine/"
 cat > "$pkg/release.json" <<EOF
 {

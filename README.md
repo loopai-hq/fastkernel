@@ -1,7 +1,7 @@
 <!-- Modified by meowkernels. (Splash's original README is docs/SPLASH-README.md.) -->
 <h1 align="center">fastkernel</h1>
 
-<p align="center"><b>Fastest kernel for Qwen3.8-27B and Qwen3.6-35B-A3B on Apple Silicon</b><br>
+<p align="center"><b>The fastest inference engine for Qwen3.8-27B and Qwen3.6-35B-A3B on Apple Silicon.</b><br>
 1.31× faster than Splash 1.1.0 on an M5 Max · every token still checked by the full model</p>
 
 <p align="center"><a href="docs/media/speed-race.mp4"><img src="docs/media/speed-race.webp" width="720" alt="fastkernel, Splash 1.1.0 and MLX-LM write the same 708-token todo app side by side on an M5 Max. fastkernel finishes in 3.97 s, Splash in 5.31 s, MLX-LM in 24.9 s."></a><br>
@@ -160,7 +160,7 @@ cp -R .claude/skills/fastkernel ~/.agents/skills/    # Codex
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/faster-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="docs/images/faster-light.png">
-  <img alt="What's different from Splash: checks more guesses at once; guesses from your prompt (121 vs 73 tok/s, code edit vs coding question on an M5 Pro); faster GPU code for the model's math; runs on 24 GB Macs (69K-token context). 1.42× faster than Splash on an M5 Max (123.5 vs 86.9 tok/s)." width="760" src="docs/images/faster-light.png">
+  <img alt="What's different from Splash: checks more guesses at once; guesses from your prompt (editing a pasted file takes 7.2 s with fastkernel vs 13.4 s with Splash 1.1.0 on an M5 Max); faster GPU code for the model's math; runs on 24 GB Macs (69K-token context). 1.31× faster than Splash 1.1.0 on an M5 Max (123.2 vs 93.8 tok/s)." width="760" src="docs/images/faster-light.png">
 </picture>
 
 - **Same model, same checking.** A small draft model guesses the next few tokens. The full model checks every guess
@@ -175,5 +175,9 @@ cp -R .claude/skills/fastkernel ~/.agents/skills/    # Codex
 
 ## Credits & license
 
-Built on [Splash](https://github.com/incoai/splash) by Inco AI, Apache-2.0 ([LICENSE](LICENSE)). Splash's own README:
-[docs/SPLASH-README.md](docs/SPLASH-README.md). Each file we changed says "Modified by meowkernels."
+fastkernel is licensed under the Apache License 2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)). If you build on it, keep
+the NOTICE file and credit fastkernel.
+
+Thank you to [Inco AI](https://github.com/incoai) for [Splash](https://github.com/incoai/splash), the Apache-2.0 engine
+fastkernel is built on. Splash's own README: [docs/SPLASH-README.md](docs/SPLASH-README.md). Each file we changed
+from Splash says "Modified by meowkernels."
