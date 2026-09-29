@@ -19,6 +19,27 @@ confidence.
 
 ## M5 Max (40-core GPU, 128 GB)
 
+### Sampled answers vs Splash 1.1.0, 6 prompts
+
+Splash 1.1.0 is the latest Splash. Both servers ran at the same time, taking turns on each prompt, with other apps and
+servers closed. fastkernel is the released 1.0.0 package.
+
+| Engine | tok/s | |
+|---|---:|---|
+| **fastkernel** | **123.2** | |
+| Splash 1.1.0 | 93.8 | fastkernel is **1.31× faster** (95% range 1.28–1.35×) |
+
+| Task | fastkernel | Splash 1.1.0 | fastkernel is |
+|---|---:|---:|---:|
+| chat | 80.6 | 57.2 | 1.41× |
+| code | 158.8 | 116.8 | 1.36× |
+| multilingual | 96.4 | 73.1 | 1.32× |
+| math | 172.7 | 132.5 | 1.30× |
+| code file | 140.0 | 110.4 | 1.27× |
+| agent (32K prompt) | 90.8 | 72.9 | 1.25× |
+
+- Settings: temperature 1, top-p 0.95, top-k 20, up to 1,024 tokens, seeds 20261501 and 20261502; 12 of 12 pairs.
+
 ### Sampled answers vs Splash and MTPLX, 6 prompts
 
 We sent the 6 prompts, twice each, to each engine in turn. MTPLX uses MTP, the model's built-in way to guess its next
