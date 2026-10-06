@@ -1,52 +1,109 @@
-// Modified by meowkernels.
 #include "ModelFactory.hpp"
+#include "model/AffineTarget.hpp"
+#include "model/DraftCheckpoint.hpp"
+#include "model/GgufTarget.hpp"
+#include "model/QwenTargetLoader.hpp"
+#include "model/VisionLoader.hpp"
 
-#include <cstdlib>
+#include <functional>
+#include <limits>
+#include <optional>
 #include <stdexcept>
-#include <string_view>
 #include <type_traits>
 #include <vector>
 
 namespace splash::model {
 
-void requireCompatibleModelPackage(const ModelPackage &package) {
-  if (!package.descriptor.valid() ||
-      package.descriptor.draft != package.draft.layout ||
+void requireCompatibleModel(const LoadedModel &model) {
+  if (!model.descriptor.valid() ||
+      model.descriptor.draft != model.draft.layout ||
       !std::visit(
           [&](const auto &target) {
-            return package.descriptor.target == TargetLayout{target.layout} &&
+            return model.descriptor.target == TargetLayout{target.layout} &&
                    target.layout.vocabularySize ==
-                       package.draft.layout.vocabularySize;
+                       model.draft.layout.vocabularySize;
           },
-          package.target)) {
+          model.target)) {
     throw std::invalid_argument(
         "target and draft model interfaces are incompatible");
   }
 }
 
+std::unique_ptr<VisionLoader> planVisionLoader(const std::filesystem::path &root, const ModelDescriptor &descriptor) {
+  if (descriptor.visionSource != VisionSource::Mlx && descriptor.visionSource != VisionSource::Gguf)
+    return nullptr;
+  return std::make_unique<VisionLoader>(root / "vision", descriptor.visionSource, descriptor.vision);
+}
+
+QwenVisionWeights loadVisionWeights(metal::MetalBackend &backend, WeightImages &images,
+                                    const std::filesystem::path &root, const ModelDescriptor &descriptor,
+                                    const VisionLoader *loader) {
+  if (loader) return loadQwenVisionWeights(backend, images, *loader);
+  if (descriptor.visionSource == VisionSource::Package)
+    return loadQwenVisionWeights(backend, images, root / "vision", descriptor.vision);
+  return {};
+}
+
 namespace {
 
-ModelPackage loadPackage(metal::MetalBackend &backend,
-                         const std::filesystem::path &root,
-                         ModelDescriptor descriptor) {
-  ModelPackage result;
-  result.descriptor = std::move(descriptor);
+TargetWeights readTarget(metal::MetalBackend &backend, const Qwen3_8Layout &layout,
+                         const QwenTargetFiles<Qwen3_8Layout> &files) {
+  return loadQwen3_8Weights(backend, layout, files);
+}
+
+TargetWeights readTarget(metal::MetalBackend &backend, const Qwen3_6MoeLayout &layout,
+                         const QwenTargetFiles<Qwen3_6MoeLayout> &files) {
+  return loadQwen3_6MoeWeights(backend, layout, files);
+}
+
+template <class Image> uint64_t imageBytes(const std::vector<Image> &images) {
+  uint64_t total = 0;
+  for (const Image &image : images) total += image.bytes;
+  return total;
+}
+
+} // namespace
+
+LoadedModel loadModel(metal::MetalBackend &backend,
+                              const std::filesystem::path &root,
+                              const ModelDescriptor &descriptor) {
+  LoadedModel result;
+  result.descriptor = descriptor;
   if (!result.descriptor.valid())
     throw std::invalid_argument("model descriptor is invalid");
+  result.images = std::make_shared<WeightImages>(backend, result.descriptor.sourceIdentity);
+  WeightImages &images = *result.images;
+  // Every source's metadata is checked before the first image is written:
+  // the vision tower's and the draft's here, the target's by its loader.
+  const auto vision = planVisionLoader(root, result.descriptor);
+  std::optional<DraftCheckpointLoader> draft;
+  if (result.descriptor.draftFromCheckpoint())
+    draft.emplace(images, root / "draft", result.descriptor.draft);
   result.target = std::visit(
       [&](const auto &layout) -> TargetWeights {
-        if constexpr (std::is_same_v<std::remove_cvref_t<decltype(layout)>,
-                                     Qwen3_8Layout>)
-          return loadQwen3_8Weights(backend, root / "target", layout);
-        else
-          return loadQwen3_6MoeWeights(backend, root / "target", layout);
+        using Layout = std::remove_cvref_t<decltype(layout)>;
+        const std::filesystem::path directory = root / "target";
+        switch (result.descriptor.targetSource) {
+        case TargetSource::Package:
+          return readTarget(backend, layout, PackageTargetFiles<Layout>{images, directory, layout});
+        case TargetSource::Mlx: {
+          AffineTargetLoader loader(images, directory, layout);
+          return readTarget(backend, layout, std::ref(loader));
+        }
+        case TargetSource::Gguf: {
+          GgufTargetLoader loader(backend, images, findTargetGguf(directory), layout);
+          return readTarget(backend, layout, std::ref(loader));
+        }
+        }
+        throw std::invalid_argument("unknown target source");
       },
       result.descriptor.target);
   result.draft = loadDFlashDraftWeights(
-      backend, root / "draft", result.descriptor.draft);
-  if (!textOnlyRequested())
-    result.vision = loadQwenVisionWeights(
-        backend, root / "vision", result.descriptor.vision);
+      backend,
+      draft ? DraftFiles(std::ref(*draft))
+            : DraftFiles(PackageDraftFiles{images, root / "draft", result.descriptor.draft}),
+      result.descriptor.draft);
+  result.vision = loadVisionWeights(backend, images, root, result.descriptor, vision.get());
 
   std::vector<WeightFileRecord> records(result.targetFiles().begin(),
                                         result.targetFiles().end());
@@ -55,29 +112,38 @@ ModelPackage loadPackage(metal::MetalBackend &backend,
   records.insert(records.end(), result.vision.files.begin(),
                  result.vision.files.end());
   result.manifestFingerprintSha256 = weightManifestFingerprint(records);
-  requireCompatibleModelPackage(result);
+  requireCompatibleModel(result);
   return result;
 }
 
-} // namespace
-
-bool textOnlyRequested() noexcept {
-  static const bool enabled = [] {
-    const char *value = std::getenv("SPLASH_TEXT_ONLY");
-    return value && std::string_view(value) == "1";
-  }();
-  return enabled;
-}
-
-ModelPackage loadModelPackage(metal::MetalBackend &backend,
-                              const std::filesystem::path &root) {
-  return loadPackage(backend, root, inspectModelPackage(root));
-}
-
-ModelPackage loadModelPackage(metal::MetalBackend &backend,
-                              const std::filesystem::path &root,
-                              const ModelDescriptor &descriptor) {
-  return loadPackage(backend, root, descriptor);
+uint64_t modelWeightBytes(const std::filesystem::path &root, const ModelDescriptor &descriptor) {
+  uint64_t bytes = 0;
+  if (descriptor.targetSource == TargetSource::Gguf) {
+    WeightSource source(findTargetGguf(root / "target"));
+    const GgufFile file(source);
+    bytes = std::visit(
+        [&](const auto &layout) { return imageBytes(gguf::planImages(file, layout)); },
+        descriptor.target);
+  } else if (descriptor.targetSource == TargetSource::Mlx) {
+    bytes = std::visit([](const auto &layout) { return imageBytes(affineTargetImages(layout)); }, descriptor.target);
+  }
+  if (descriptor.draftFromCheckpoint())
+    bytes += imageBytes(draftCheckpointImages(descriptor.draft));
+  if (descriptor.visionSource == VisionSource::Mlx || descriptor.visionSource == VisionSource::Gguf)
+    bytes += visionImageBytes(descriptor.vision);
+  for (std::string_view directory : {"target", "draft", "vision"}) {
+    if (directory == "vision" && descriptor.visionSource != VisionSource::Package) continue;
+    if (directory == "draft" && descriptor.draftFromCheckpoint()) continue;
+    if (directory == "target" && descriptor.targetSource != TargetSource::Package) continue;
+    for (const auto &entry : std::filesystem::recursive_directory_iterator(root / directory)) {
+      if (!entry.is_regular_file()) continue;
+      const uint64_t size = entry.file_size();
+      if (size > std::numeric_limits<uint64_t>::max() - bytes) throw std::overflow_error("model weight size overflows");
+      bytes += size;
+    }
+  }
+  if (!bytes) throw std::invalid_argument("the model root holds no weight files");
+  return bytes;
 }
 
 } // namespace splash::model

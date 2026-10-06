@@ -1,23 +1,23 @@
 # What we built
 
-fastkernel is new engine code, not a settings change. Compared with Splash (upstream `134807b`), the engine's
-`runtime/` folder has **53 files changed, 6,048 lines added and 537 removed**.
+fastkernel is new engine code, not a settings change. Compared with Splash 1.3.0, the engine's
+`runtime/` folder has **52 files changed, 5,314 lines added and 328 removed**.
 
-- 2,128 of the new lines are Metal shaders and GPU headers. Metal is Apple's language for GPU code.
-- There are **32 new GPU kernels**: 132 `kernel void` functions, up from Splash's 100. A kernel is a small program
-  that runs on the GPU.
+- 2,216 of the new lines are Metal shaders and GPU headers. Metal is Apple's language for GPU code.
+- There are **34 new GPU kernels**: 133 `kernel void` functions, up from
+  Splash 1.3.0's 99. A kernel is a small program that runs on the GPU.
 - The model weights, the draft model and the rule that the full model checks every token stay the same.
 
 The biggest pieces, in lines added:
 
 | File | Lines added |
 |---|---:|
-| `runtime/model/Runtime.mm` | 1,257 |
-| `runtime/metal/kernels/decode/gdn.metal` | 670 |
-| `runtime/metal/MetalBackend.mm` | 668 |
-| `runtime/metal/kernels/decode/sampling.metal` | 434 |
-| `runtime/ops/Linear.cpp` | 308 |
-| `runtime/metal/kernels/decode/linear_q4_split.metal` | 273 |
+| `runtime/model/Runtime.cpp` | 1,057 |
+| `runtime/metal/kernels/common/gdn_wide.h` | 627 |
+| `runtime/metal/kernels/decode/linear_q4_split.metal` | 620 |
+| `runtime/metal/kernels/decode/sampling.metal` | 383 |
+| `runtime/metal/MetalBackend.mm` | 335 |
+| `runtime/metal/kernels/common/gdn_value_parts.h` | 284 |
 
 ## How the engine writes an answer
 
@@ -27,7 +27,7 @@ The engine writes an answer in steps. A token is a word or part of a word.
 2. The full model checks all the guesses at once and keeps the ones it agrees with.
 3. The CPU hands this work to the GPU as GPU launches. A GPU launch is one job for the GPU to run.
 
-Speed is in tok/s: tokens written per second. We measured every gain below on an M5 Max, one change at a time. We
+Speed is in tok/s: tokens written per second. We measured every gain below on an M5 Max with fastkernel 1.0.0, one change at a time. We
 also checked each change's output (see "Is the output exact?" in [BENCHMARKS.md](BENCHMARKS.md)).
 
 ## 1. New GPU kernels for the 4-bit matrix multiplications
@@ -45,8 +45,8 @@ through them.
 | Three or four requests at once | each step takes 20% less time; the total goes from 163.9 to 208.2 tok/s (27% more) |
 | Scheduling fixes inside the kernels | another 0.15–0.31 ms saved per step, each |
 
-Code: `runtime/metal/kernels/decode/linear_q4.metal`, `linear_q4_split.metal`, `linear_q4_context_kv.metal`,
-`runtime/metal/kernels/shared/normalization.metal`, `runtime/ops/Linear.cpp`.
+Code: `runtime/metal/kernels/decode/linear_q4_split.metal`, `runtime/metal/kernels/shared/normalization.metal`,
+`runtime/ops/Linear.cpp`.
 
 ## 2. New GPU kernels for the linear-attention (GDN) layers
 
@@ -58,7 +58,8 @@ back at them. GDN layers are linear attention: they keep a running summary inste
   faster, and tool copies (tool calls that copy text) 2.74% faster.
 - The GDN output kernel also prepares the next multiplication's input: 0.08 ms saved per step.
 
-Code: `runtime/metal/kernels/decode/gdn.metal`, `gdn_value_parts.h`, `runtime/ops/GDN.cpp`.
+Code: `runtime/metal/kernels/decode/gdn.metal`, `runtime/metal/kernels/common/gdn_value_parts.h`, `gdn_wide.h`,
+`runtime/ops/GDN.cpp`.
 
 ## 3. Smarter drafting
 
@@ -69,12 +70,9 @@ Code: `runtime/metal/kernels/decode/gdn.metal`, `gdn_value_parts.h`, `runtime/op
   (`data/head-ranked.u32`): 2.4% more tok/s.
 - **Sharper guesses.** The draft gets its own temperature and top-p, which set how bold its picks are. That gives 0.8%
   and 0.3% more tokens accepted.
-- **Grouped K/V.** The engine runs
-  the draft's K/V math for all its layers in one GPU launch (each layer still writes its own memory). This saves
-  0.22 ms per step, and 0.37 ms with two requests at once.
 
-Code: `runtime/model/DFlashDraft.cpp`, `runtime/ops/Sampling.cpp`, `runtime/metal/kernels/decode/sampling.metal`,
-`draft.metal`.
+Code: `runtime/model/DFlashDraft.cpp`, `runtime/ops/Sampling.cpp`, `runtime/ops/DraftSelector.cpp`,
+`runtime/metal/kernels/decode/sampling.metal`, `draft.metal`.
 
 ## 4. Prompt lookup: exact wide checking for copy-heavy text
 
@@ -84,7 +82,7 @@ Tool calls that copy text work the same way.
 For these answers, the engine guesses the next words straight from your prompt, and the full model checks them. When
 the guesses match, the full model keeps many words in one step.
 
-For example, a code edit on a 24 GB M5 Pro runs at 121 tok/s. A coding question runs at 73.
+For example, with fastkernel 1.0.0 a code edit on a 24 GB M5 Pro ran at 121 tok/s, and a coding question at 73.
 
 How the wide check stays exact:
 
@@ -97,8 +95,8 @@ How the wide check stays exact:
 | 16 rows | rewrites 52% and edits 24% faster |
 | The step up to 32 rows | code edits 12.7% and tool copies 27.4% faster again |
 
-Code: `runtime/model/Runtime.mm` (lookup and scheduling), `runtime/model/QwenTarget.cpp` (the exact-row inputs and
-the width check).
+Code: `runtime/model/Runtime.cpp` and `PromptLookup.hpp` (lookup and scheduling), `runtime/model/QwenTarget.cpp`
+(the exact-row inputs and the width check), `runtime/ops/PagedAttention.cpp` (row-stable verify attention).
 
 ## 5. Fewer, larger GPU launches
 
@@ -106,11 +104,8 @@ Each change below cuts time the CPU and GPU spend setting up or waiting on each 
 
 - The GPU starts a step before the CPU finishes building it: 0.07–0.2 ms per step.
 - A tool-call step runs as a single GPU command: tool calls 1.36% faster.
-- The draft's work overlaps the last layers of the main model: 0.28 ms per step.
-- A command graph is the list of GPU jobs for one step. Now
-  the step's command graph reuses its memory instead of reallocating it each step: 0.35% faster.
 
-Code: `runtime/metal/MetalBackend.mm`, `runtime/metal/CommandGraph.hpp`, `runtime/model/Runtime.mm`.
+Code: `runtime/metal/MetalBackend.mm`, `runtime/metal/CommandGraph.hpp`, `runtime/model/Runtime.cpp`.
 
 ## 6. A memory plan that fits 24 GB Macs
 
@@ -120,10 +115,10 @@ Code: `runtime/metal/MetalBackend.mm`, `runtime/metal/CommandGraph.hpp`, `runtim
 - **The engine keeps prompt checkpoints as a cache.** A checkpoint is the model's state, saved while it reads a
   prompt. A second agent sharing an 11K-token prompt gets its first token in 4.4 s instead of 13.3 s.
 
-On a 24 GB M5 Pro, this gives 8,185 tokens of context at default settings. With the GPU given 20 GB, it gives
-69,625. The context is the most text the model can hold at once: your prompt plus its answer.
+With fastkernel 1.0.0 on a 24 GB M5 Pro, this gave 8,185 tokens of context at default settings. With the GPU given
+20 GB, it gave 69,625. The context is the most text the model can hold at once: your prompt plus its answer.
 
-Code: `runtime/engine/MemoryPlan.cpp`, `runtime/engine/RuntimeResources.mm`, `runtime/model/ModelFactory.cpp`,
+Code: `runtime/engine/MemoryPlan.cpp`, `runtime/engine/RuntimeResources.mm`, `runtime/model/DFlashDraft.cpp`,
 `runtime/main.mm`.
 
 ## 7. Rules that follow the GPU
@@ -137,19 +132,6 @@ It does not use a fixed table for one Mac.
 
 Code: `runtime/ops/Linear.cpp`, `runtime/model/QwenTarget.cpp`.
 
-## Switches (for testing only)
+## Switches
 
-Every change has a switch, and all are on by default. To turn one off and compare with Splash's path, set
-`SPLASH_<NAME>=0` on the serve command. `DRAFT_TAU` and `DRAFT_TOP_P` switch off with `=1`.
-
-| Part | Switches |
-|---|---|
-| 1. Matrix-multiply kernels | `INPUT_FUSED_SUMS`, `M16_INPUT_SUMS`, `M24_INPUT_SUMS`, `M24_PAD3`, `NARROW_SPLIT`, `M16_NARROW_SPLIT`, `M24_NARROW_SPLIT`, `SPLIT4_HOIST`, `SPLIT4_FOOTER`, `SPLIT4_M16`, `SPLIT4_INPUT_DIV`, `FFN_FUSED_SUMS`, `M16_FFN_SUMS` |
-| 2. GDN kernels | `GDN_VALUE_PARTS`, `WIDE_GDN_SINGLE`, `GDN_FUSED_SUMS` |
-| 3. Drafting | `BLOCK_VERIFY`, `DRAFT_AHEAD`, `DRAFT_AHEAD_GRAMMAR`, `DRAFT_TAU`, `DRAFT_TOP_P`, `GROUPED_CONTEXT_KV` |
-| 4. Wide checking | `PROMPT_LOOKUP`, `WIDE_PROMPT_LOOKUP`, `WIDE_LOOKUP32`, `LOOKUP_ADAPTIVE` |
-| 5. GPU launches | `CHUNKED_SUBMIT`, `STREAMED_SUBMIT`, `GRAMMAR_CHAIN`, `SEAM_SIBLING`, `REUSE_DECODE_GRAPH` |
-| 6. Memory | `KEEP_PREFILL_CHECKPOINTS`. Opt-in: `TEXT_ONLY=1`, `DRAFT_HEAD_IDS=<file>` |
-
-`INPUT_FUSED_SUMS` and `M16_INPUT_SUMS` go together. With either one off, the engine narrows wide checking to the rows
-that still stay exact. For debugging: `ROW_HASH=1`, `GPU_GAP_LOG=1`, `HOST_PHASE_LOG=1`, `CONTEXT_KV_WITNESS=1`.
+Every change above has a switch. [SWITCHES.md](SWITCHES.md) lists them all, with their defaults.

@@ -5,14 +5,14 @@
 # Usage: make all && install/package.sh [VERSION]
 set -eu
 cd "$(dirname -- "$0")/.."
-version=${1:-1.0.0}
+version=${1:-1.1.0}
 test -x build/splash && test -f build/splash.metallib || { echo "error: run 'make all' first" >&2; exit 1; }
 
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 pkg=$stage/fastkernel
 mkdir -p "$pkg/engine" dist
-git archive HEAD install server data/head-ranked.u32 LICENSE NOTICE | tar -x -C "$pkg"
+git archive HEAD install server data/head-ranked.u32 LICENSE NOTICE THIRD_PARTY_NOTICES | tar -x -C "$pkg"
 cp build/splash build/splash.metallib "$pkg/engine/"
 cat > "$pkg/release.json" <<EOF
 {

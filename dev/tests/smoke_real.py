@@ -6,10 +6,17 @@ from __future__ import annotations
 
 import argparse
 import base64
+import concurrent.futures
+import contextlib
+import fcntl
 import http.client
 import io
 import json
+import os
+import re
+import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -21,7 +28,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from install import assembly  # noqa: E402
 from install import models as model_artifacts  # noqa: E402
+from server import serve_options  # noqa: E402
 
 
 class SmokeFailure(RuntimeError):
@@ -39,12 +48,21 @@ def available_port() -> int:
         return int(listener.getsockname()[1])
 
 
+def request_headers(payload: bool) -> dict:
+    """The JSON content type of a body, and the key the server requires
+    when SPLASH_API_KEY is set: the server's --api-key defaults to it."""
+    headers = {"Content-Type": "application/json"} if payload else {}
+    if key := os.environ.get("SPLASH_API_KEY"):
+        headers["Authorization"] = f"Bearer {key}"
+    return headers
+
+
 def request(
     port: int, method: str, path: str, body: dict | None = None, *, timeout: float = 60
 ):
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
     payload = None if body is None else json.dumps(body).encode()
-    headers = {} if payload is None else {"Content-Type": "application/json"}
+    headers = request_headers(payload is not None)
     try:
         connection.request(method, path, payload, headers)
         response = connection.getresponse()
@@ -62,7 +80,7 @@ def stream_request(port: int, path: str, body: dict) -> tuple[int, str, bytes]:
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=60)
     payload = json.dumps(body).encode()
     try:
-        connection.request("POST", path, payload, {"Content-Type": "application/json"})
+        connection.request("POST", path, payload, request_headers(True))
         response = connection.getresponse()
         return response.status, response.getheader("Content-Type", ""), response.read()
     finally:
@@ -70,8 +88,15 @@ def stream_request(port: int, path: str, body: dict) -> tuple[int, str, bytes]:
 
 
 class RealServer:
-    def __init__(self, arguments):
-        package = arguments.package.resolve()
+    def __init__(
+        self,
+        arguments,
+        *,
+        cache_dir: Path | None = None,
+    ):
+        """A server of arguments.model_root, with a persistent cache in
+        cache_dir when one is given."""
+        model_root = arguments.model_root.resolve()
         binary = arguments.binary.resolve()
         self.port = available_port()
         self.log = tempfile.NamedTemporaryFile(
@@ -79,9 +104,9 @@ class RealServer:
         )
         command = [
             sys.executable,
-            str(ROOT / "server/server.py"),
-            str(package / "target"),
-            str(package / "draft"),
+            "-m",
+            "server.server",
+            str(model_root),
             "--host",
             "127.0.0.1",
             "--port",
@@ -89,7 +114,7 @@ class RealServer:
             "--binary",
             str(binary),
             "--tokenizer",
-            str(package / "tokenizer"),
+            str(model_root / "tokenizer"),
             "--model",
             arguments.model,
         ]
@@ -97,6 +122,12 @@ class RealServer:
             command.extend(("--max-context", str(arguments.max_context)))
         if arguments.max_memory is not None:
             command.extend(("--max-memory", arguments.max_memory))
+        if arguments.max_cache_disk is not None:
+            command.extend(("--max-cache-disk", arguments.max_cache_disk))
+        if cache_dir is not None:
+            command.extend(("--persistent-cache", "--cache-dir", str(cache_dir)))
+        if arguments.max_image_pixels is not None:
+            command.extend(("--max-image-pixels", str(arguments.max_image_pixels)))
         command.extend(("--kv-format", arguments.kv_format))
         self.process = subprocess.Popen(
             command,
@@ -125,6 +156,18 @@ class RealServer:
             time.sleep(0.25)
         raise SmokeFailure(f"server did not become ready\n{self.tail()}")
 
+    def stop(self, timeout: float = 60) -> None:
+        """Stops the server with SIGINT, as Ctrl+C stops splash serve, and
+        requires a clean exit within timeout."""
+        self.process.send_signal(signal.SIGINT)
+        try:
+            code = self.process.wait(timeout)
+        except subprocess.TimeoutExpired:
+            raise SmokeFailure(
+                f"server did not stop within {timeout:.0f} s\n{self.tail()}"
+            ) from None
+        require(code == 0, f"server stopped with status {code}\n{self.tail()}")
+
     def close(self) -> None:
         if self.process.poll() is None:
             self.process.terminate()
@@ -137,8 +180,7 @@ class RealServer:
 
 
 def kv_identity(identity: dict) -> dict:
-    # Older INT8 builds expose only q8 and have no explicit format field.
-    return {"format": "int8", **identity.get("kv", identity.get("q8", {}))}
+    return identity.get("kv", {})
 
 
 def validate_status(status: dict, kv_format: str | None = None) -> None:
@@ -154,7 +196,7 @@ def validate_status(status: dict, kv_format: str | None = None) -> None:
     )
     identity = status.get("identity", {})
     kv = kv_identity(identity)
-    actual = kv["format"]
+    actual = kv.get("format")
     require(actual in ("int8", "bf16"), "unknown KV format")
     if kv_format is not None:
         require(actual == kv_format, "runtime KV format differs from requested format")
@@ -195,13 +237,14 @@ def image_data_url(kind: str) -> str:
 
 
 def image_chat_body(model: str, prompt: str, url: str, **extra) -> dict:
+    """A user message that shows the image and then asks the prompt."""
     body = chat_body(model, prompt, **extra)
     body["messages"] = [
         {
             "role": "user",
             "content": [
-                {"type": "text", "text": prompt},
                 {"type": "image_url", "image_url": {"url": url}},
+                {"type": "text", "text": prompt},
             ],
         }
     ]
@@ -215,7 +258,13 @@ def answer_text(chat: dict) -> str:
 
 
 def run_images(port: int, model: str, nonce: str) -> None:
-    question = f"What color is this image? Answer with one word. Request {nonce}."
+    # More than a block of tokens follows the image, so the replay point a
+    # repeat restores lies past it.
+    question = (
+        "What color is the image above? Answer with exactly one lowercase English "
+        "word naming the color, with no punctuation, explanation or other words. "
+        f"Request {nonce}."
+    )
     code, red = request(
         port,
         "POST",
@@ -233,9 +282,11 @@ def run_images(port: int, model: str, nonce: str) -> None:
         flush=True,
     )
 
-    # The same image and prompt reuse the image-aware prefix without running
-    # the vision tower again; a different image behind identical placeholder
-    # tokens must not reuse KV.
+    # The same image and prompt reuse the image-aware prefix, which covers the
+    # image: its rows are neither encoded nor looked up. Behind another system
+    # prompt the same image comes from the embedding cache without the vision
+    # tower. A different image behind identical placeholder tokens must not
+    # reuse KV.
     code, before = request(port, "GET", "/status")
     require(code == 200 and "images" in before, "status lacks image telemetry")
     code, repeat = request(
@@ -257,8 +308,27 @@ def run_images(port: int, model: str, nonce: str) -> None:
     require(
         code == 200
         and after["images"]["encodes"] == before["images"]["encodes"]
-        and after["images"]["embedding_reuses"] > before["images"]["embedding_reuses"],
-        f"repeated image re-ran the vision tower: {before['images']} -> {after['images']}",
+        and after["images"]["embedding_reuses"] == before["images"]["embedding_reuses"],
+        f"a prefix covering the image used its rows: {before['images']} -> "
+        f"{after['images']}",
+    )
+    body = image_chat_body(model, question, image_data_url("red"))
+    body["messages"].insert(
+        0, {"role": "system", "content": "You describe images for a test."}
+    )
+    code, other = request(port, "POST", "/v1/chat/completions", body)
+    require(
+        code == 200 and "red" in answer_text(other),
+        f"the image behind another system prompt failed: {other!r}",
+    )
+    code, reused = request(port, "GET", "/status")
+    require(
+        code == 200
+        and reused["images"]["encodes"] == after["images"]["encodes"]
+        and reused["images"]["embedding_reuses"]
+        == after["images"]["embedding_reuses"] + 1,
+        f"a cached image re-ran the vision tower or was not reused: "
+        f"{after['images']} -> {reused['images']}",
     )
     code, blue = request(
         port,
@@ -340,9 +410,9 @@ def run_images(port: int, model: str, nonce: str) -> None:
                     ],
                 }
             ],
-            # Responses requests reason by default; leave room for the
-            # thinking block before the one-word answer.
-            "max_output_tokens": 256,
+            # Responses requests reason by default, and the thinking before
+            # the one-word answer can take more than 256 tokens.
+            "max_output_tokens": 1024,
             "temperature": 0,
             "store": False,
         },
@@ -367,10 +437,268 @@ def run_images(port: int, model: str, nonce: str) -> None:
     print("responses image input: PASS", flush=True)
 
 
-def run(port: int, model: str) -> None:
-    nonce = uuid.uuid4().hex
+# What a server without vision answers an image or PDF with
+# (server/api_shapes.py, VISION_UNAVAILABLE).
+VISION_UNAVAILABLE = "this model is serving without vision"
+LATER_SYSTEM_UNSUPPORTED = "does not accept system messages after the first message"
+# Where the chat template probe of /status says later system messages go.
+LATER_SYSTEM_IN_PLACE = ("native", "patched")
+
+
+def input_modalities(port: int, model: str) -> list:
+    """The served model's input modalities, as /v1/models reports them and
+    /status agrees."""
     code, models = request(port, "GET", "/v1/models")
     require(code == 200 and models.get("data"), "model discovery failed")
+    entry = next((item for item in models["data"] if item.get("id") == model), None)
+    require(entry is not None, f"model discovery does not list {model}: {models!r}")
+    modalities = entry.get("input_modalities")
+    require(
+        isinstance(modalities, list) and "text" in modalities,
+        f"model discovery lacks text input modalities: {entry!r}",
+    )
+    status = runtime_status(port)
+    require(
+        status.get("input_modalities") == modalities
+        and bool(status.get("vision")) == ("image" in modalities),
+        "/status and /v1/models disagree on vision: "
+        f"{status.get('vision')!r} {status.get('input_modalities')!r} vs {modalities!r}",
+    )
+    return modalities
+
+
+def later_system_mode(port: int) -> str:
+    """What the chat template probe of /status reports for later system
+    messages of a request without tools: its default template's handling."""
+    template = runtime_status(port).get("chat_template")
+    later = template.get("later_system") if isinstance(template, dict) else None
+    modes = list(later.values()) if isinstance(later, dict) else [later]
+    require(
+        modes
+        and all(mode in (*LATER_SYSTEM_IN_PLACE, "unsupported") for mode in modes),
+        f"/status lacks the chat template probe result: {template!r}",
+    )
+    if isinstance(later, dict):
+        require("default" in later, f"named chat templates lack a default: {later!r}")
+        return later["default"]
+    return later
+
+
+def run_chat_template(port: int, model: str) -> str:
+    """When the probe says later system messages render in place, the
+    rendered prompt keeps a later system block after the assistant turn it
+    follows and before the next user turn."""
+    mode = later_system_mode(port)
+    if mode not in LATER_SYSTEM_IN_PLACE:
+        print(f"chat template: later system messages {mode}", flush=True)
+        return mode
+    answer = "The answer is four."
+    later = "From now on answer in French."
+    question = "What is three plus three?"
+    code, rendered = request(
+        port,
+        "POST",
+        "/apply-template",
+        {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "You are a terse assistant."},
+                {"role": "user", "content": "What is two plus two?"},
+                {"role": "assistant", "content": answer},
+                {"role": "system", "content": later},
+                {"role": "user", "content": question},
+            ],
+        },
+    )
+    prompt = rendered.get("prompt") if code == 200 else None
+    require(isinstance(prompt, str), f"apply-template failed: {code} {rendered!r}")
+    require(
+        all(prompt.count(text) == 1 for text in (answer, later, question))
+        and prompt.find(answer) + len(answer)
+        <= prompt.find(later)
+        < prompt.find(question),
+        f"later system message was not rendered in place ({mode}): {prompt!r}",
+    )
+    if "<|im_start|>" in prompt:
+        # ChatML: the message keeps a system block of its own.
+        require(
+            f"<|im_start|>system\n{later}<|im_end|>" in prompt,
+            f"later system message did not keep its system block: {prompt!r}",
+        )
+    print(f"chat template: later system in place ({mode}): PASS", flush=True)
+    return mode
+
+
+def error_message(document: dict) -> str:
+    error = document.get("error") if isinstance(document, dict) else None
+    return (error.get("message") if isinstance(error, dict) else None) or ""
+
+
+def language_only_refusal(code: int, document: dict, modality: str) -> bool:
+    """Whether a response is the refusal of image or PDF input by a server
+    without vision."""
+    message = error_message(document)
+    return (
+        code == 400
+        and message.startswith(f"{modality} input is not supported")
+        and VISION_UNAVAILABLE in message
+    )
+
+
+def run_text_only(port: int, model: str, nonce: str) -> None:
+    """A server without vision refuses images and PDFs, in every API shape,
+    with the language-only message before rendering anything, and serves the
+    next text request."""
+    question = f"What color is this image? Answer with one word. Request {nonce}."
+    pdf = base64.b64encode(
+        (ROOT / "dev/tests/fixtures/documents/plain.pdf").read_bytes()
+    ).decode()
+    image = image_data_url("red")
+    media_type, _, data = image.partition(";base64,")
+    requests = {
+        "image Chat": (
+            "/v1/chat/completions",
+            image_chat_body(model, question, image),
+            "image",
+        ),
+        "PDF Chat": (
+            "/v1/chat/completions",
+            {
+                **chat_body(model, ""),
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "file",
+                                "file": {
+                                    "filename": "plain.pdf",
+                                    "file_data": "data:application/pdf;base64," + pdf,
+                                },
+                            },
+                            {"type": "text", "text": "Briefly describe the page."},
+                        ],
+                    }
+                ],
+            },
+            "PDF",
+        ),
+        "image Messages": (
+            "/v1/messages",
+            {
+                "model": model,
+                "max_tokens": 32,
+                "thinking": {"type": "disabled"},
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": media_type.removeprefix("data:"),
+                                    "data": data,
+                                },
+                            },
+                            {"type": "text", "text": question},
+                        ],
+                    }
+                ],
+            },
+            "image",
+        ),
+        "PDF Messages": (
+            "/v1/messages",
+            {
+                "model": model,
+                "max_tokens": 32,
+                "thinking": {"type": "disabled"},
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "document",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "application/pdf",
+                                    "data": pdf,
+                                },
+                            },
+                            {"type": "text", "text": "Briefly describe the page."},
+                        ],
+                    }
+                ],
+            },
+            "PDF",
+        ),
+        "Responses input_image": (
+            "/v1/responses",
+            {
+                "model": model,
+                "input": [
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": question},
+                            {"type": "input_image", "image_url": image},
+                        ],
+                    }
+                ],
+                "max_output_tokens": 32,
+                "store": False,
+            },
+            "image",
+        ),
+    }
+    before = counters(port)
+    for name, (path, body, modality) in requests.items():
+        code, rejected = request(port, "POST", path, body)
+        require(
+            language_only_refusal(code, rejected, modality),
+            f"text-only {name} was not refused as language-only: {code} {rejected!r}",
+        )
+    code, chat = request(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        chat_body(model, f"Reply with one short word. After media {nonce}."),
+    )
+    require(
+        code == 200 and chat.get("usage", {}).get("completion_tokens", 0) > 0,
+        f"text request after refused media failed: {code} {chat!r}",
+    )
+    after = counters(port)
+    require(
+        after["submitted"] == before["submitted"] + 1
+        and after["failed"] == before["failed"]
+        and after["restarts"] == 0,
+        f"refused media reached the runtime: {before!r} -> {after!r}",
+    )
+    print("text-only media refusal: PASS", flush=True)
+
+
+# A tool whose only valid call is {"value": "ok"}.
+PROBE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "record_probe",
+        "description": "Record the fixed smoke-test value.",
+        "parameters": {
+            "type": "object",
+            "properties": {"value": {"type": "string", "const": "ok"}},
+            "required": ["value"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
+def run(port: int, model: str) -> None:
+    nonce = uuid.uuid4().hex
+    modalities = input_modalities(port, model)
 
     code, chat = request(
         port,
@@ -414,19 +742,6 @@ def run(port: int, model: str) -> None:
     )
     print("chat streaming: PASS", flush=True)
 
-    tool = {
-        "type": "function",
-        "function": {
-            "name": "record_probe",
-            "description": "Record the fixed smoke-test value.",
-            "parameters": {
-                "type": "object",
-                "properties": {"value": {"type": "string", "const": "ok"}},
-                "required": ["value"],
-                "additionalProperties": False,
-            },
-        },
-    }
     code, tool_response = request(
         port,
         "POST",
@@ -434,7 +749,7 @@ def run(port: int, model: str) -> None:
         chat_body(
             model,
             f"Call record_probe for request {nonce}.",
-            tools=[tool],
+            tools=[PROBE_TOOL],
             tool_choice={"type": "function", "function": {"name": "record_probe"}},
             max_completion_tokens=96,
         ),
@@ -492,6 +807,7 @@ def run(port: int, model: str) -> None:
     )
     print("responses: PASS", flush=True)
 
+    later_system = run_chat_template(port, model)
     code, anthropic = request(
         port,
         "POST",
@@ -513,20 +829,149 @@ def run(port: int, model: str) -> None:
             "thinking": {"type": "disabled"},
         },
     )
-    require(code == 200 and anthropic.get("type") == "message", "Messages failed")
-    require(isinstance(anthropic.get("content"), list), "Messages content missing")
-    require(
-        "PONG" in "".join(block.get("text", "") for block in anthropic["content"]),
-        "Messages inline system instruction was not followed",
-    )
+    if later_system in LATER_SYSTEM_IN_PLACE:
+        require(code == 200 and anthropic.get("type") == "message", "Messages failed")
+        require(isinstance(anthropic.get("content"), list), "Messages content missing")
+        require(
+            "PONG" in "".join(block.get("text", "") for block in anthropic["content"]),
+            "Messages inline system instruction was not followed",
+        )
+    else:
+        require(
+            code == 400 and LATER_SYSTEM_UNSUPPORTED in error_message(anthropic),
+            f"unsupported later system message was not refused: {anthropic!r}",
+        )
     print("anthropic messages: PASS", flush=True)
 
-    run_images(port, model, nonce)
-    run_protocol_extensions(port, model)
+    run_sampling(port, model)
+    vision = "image" in modalities
+    if vision:
+        run_images(port, model, nonce)
+    else:
+        run_text_only(port, model, nonce)
+    run_protocol_extensions(port, model, vision)
     run_judgments(port, model, nonce)
 
 
-def run_protocol_extensions(port: int, model: str) -> None:
+def run_sampling(port: int, model: str) -> None:
+    """The sampling penalties, top_k and min_p on the real model: a penalized
+    greedy request repeats itself exactly once its prompt is cached (the first
+    run chunks the prompt differently), a sampled request whose min_p of 1
+    leaves each row its most likely token answers what a greedy one does, and
+    penalized greedy, sampled and constrained requests finish side by side with
+    an unpenalized one and with sampled ones whose top_k keeps every token or
+    which min_p cuts."""
+    prompt = "Name the days of the week, three times over, separated by commas."
+    penalized = chat_body(
+        model,
+        prompt,
+        presence_penalty=1.5,
+        frequency_penalty=0.5,
+        repetition_penalty=1.05,
+        max_completion_tokens=48,
+    )
+    answers = []
+    for _ in range(3):
+        code, chat = request(port, "POST", "/v1/chat/completions", penalized)
+        require(code == 200, f"penalized greedy Chat failed: {chat!r}")
+        answers.append(answer_text(chat))
+    require(answers[1] == answers[2], "a penalized greedy request did not repeat")
+
+    code, greedy = request(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        chat_body(model, prompt, max_completion_tokens=48),
+    )
+    require(code == 200, f"greedy Chat failed: {greedy!r}")
+    code, heaviest = request(
+        port,
+        "POST",
+        "/v1/chat/completions",
+        chat_body(
+            model,
+            prompt,
+            temperature=1.0,
+            top_k=-1,
+            top_p=1.0,
+            min_p=1.0,
+            seed=13,
+            max_completion_tokens=48,
+        ),
+    )
+    require(
+        code == 200 and answer_text(heaviest) == answer_text(greedy),
+        f"min_p 1 did not answer as a greedy request: {heaviest!r}",
+    )
+
+    bodies = {
+        "greedy": penalized,
+        "sampled": chat_body(
+            model,
+            prompt,
+            temperature=0.8,
+            top_k=-1,
+            presence_penalty=1.5,
+            seed=7,
+            max_completion_tokens=48,
+        ),
+        "whole": chat_body(
+            model,
+            prompt,
+            temperature=1.0,
+            top_k=0,
+            top_p=1.0,
+            seed=11,
+            max_completion_tokens=48,
+        ),
+        "min_p": chat_body(
+            model,
+            prompt,
+            temperature=0.8,
+            min_p=0.1,
+            seed=17,
+            max_completion_tokens=48,
+        ),
+        "tool": chat_body(
+            model,
+            "Call record_probe.",
+            tools=[PROBE_TOOL],
+            tool_choice={"type": "function", "function": {"name": "record_probe"}},
+            repetition_penalty=1.1,
+            presence_penalty=0.5,
+            max_completion_tokens=96,
+        ),
+        "ignore_eos": chat_body(model, prompt, ignore_eos=True),
+    }
+    results = {}
+    with concurrent.futures.ThreadPoolExecutor(len(bodies)) as pool:
+        futures = {
+            name: pool.submit(request, port, "POST", "/v1/chat/completions", body)
+            for name, body in bodies.items()
+        }
+        for name, future in futures.items():
+            try:
+                results[name] = future.result(timeout=300)
+            except Exception as error:
+                raise SmokeFailure(
+                    f"concurrent {name} request failed: {error!r}"
+                ) from error
+    for name, (code, document) in results.items():
+        require(code == 200, f"concurrent {name} request failed: {document!r}")
+    calls = results["tool"][1]["choices"][0]["message"].get("tool_calls", [])
+    require(
+        len(calls) == 1
+        and json.loads(calls[0]["function"]["arguments"]) == {"value": "ok"},
+        "a penalized tool call failed",
+    )
+    require(
+        results["ignore_eos"][1]["usage"]["completion_tokens"] == 32,
+        "ignore_eos beside penalized requests stopped early",
+    )
+    print("sampling penalties, top_k and min_p: PASS", flush=True)
+
+
+def run_protocol_extensions(port: int, model: str, vision: bool = True) -> None:
     messages = [{"role": "user", "content": "What is 2 + 2? Answer briefly."}]
     for suffix in ("", "?beta=true"):
         code, count = request(
@@ -633,38 +1078,8 @@ def run_protocol_extensions(port: int, model: str) -> None:
         count["input_tokens"] == actual, f"count/usage mismatch: {count!r} vs {usage!r}"
     )
 
-    pdf = base64.b64encode(
-        (ROOT / "dev/tests/fixtures/documents/plain.pdf").read_bytes()
-    ).decode()
-    code, document = request(
-        port,
-        "POST",
-        "/v1/messages",
-        {
-            "model": model,
-            "max_tokens": 64,
-            "thinking": {"type": "disabled"},
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "document",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "application/pdf",
-                                "data": pdf,
-                            },
-                        },
-                        {"type": "text", "text": "Briefly describe the page."},
-                    ],
-                }
-            ],
-        },
-    )
-    require(
-        code == 200 and document.get("content"), f"PDF generation failed: {document!r}"
-    )
+    if vision:
+        run_pdf(port, model)
 
     code, combined = request(
         port,
@@ -682,7 +1097,11 @@ def run_protocol_extensions(port: int, model: str) -> None:
                     "type": "function",
                     "function": {
                         "name": "lookup",
-                        "parameters": {"type": "object", "properties": {}},
+                        "parameters": {
+                            "type": "object",
+                            "properties": {},
+                            "additionalProperties": False,
+                        },
                     },
                 }
             ],
@@ -755,6 +1174,41 @@ def run_protocol_extensions(port: int, model: str) -> None:
     print(
         "Anthropic count/beta, hidden-thinking continuation, structured output and nullable Responses: PASS",
         flush=True,
+    )
+
+
+def run_pdf(port: int, model: str) -> None:
+    pdf = base64.b64encode(
+        (ROOT / "dev/tests/fixtures/documents/plain.pdf").read_bytes()
+    ).decode()
+    code, document = request(
+        port,
+        "POST",
+        "/v1/messages",
+        {
+            "model": model,
+            "max_tokens": 64,
+            "thinking": {"type": "disabled"},
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "document",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "application/pdf",
+                                "data": pdf,
+                            },
+                        },
+                        {"type": "text", "text": "Briefly describe the page."},
+                    ],
+                }
+            ],
+        },
+    )
+    require(
+        code == 200 and document.get("content"), f"PDF generation failed: {document!r}"
     )
 
 
@@ -1009,7 +1463,10 @@ def run_judgments(port: int, model: str, nonce: str) -> None:
         timeout=300,
     )
     elapsed = time.monotonic() - started
-    require(code == 504, f"expected a scoring timeout, got HTTP {code}: {timed_out!r}")
+    require(
+        code == 504 and timed_out.get("error", {}).get("code") == "request_timeout",
+        f"expected a scoring timeout, got HTTP {code}: {timed_out!r}",
+    )
     require(
         elapsed < forward,
         f"the deadline did not cut prefill short: {elapsed:.2f}s of {forward:.2f}s",
@@ -1034,50 +1491,197 @@ def run_judgments(port: int, model: str, nonce: str) -> None:
     print(f"judgments timeout recovery: PASS (504 after {elapsed:.2f}s)", flush=True)
 
 
-def add_server_arguments(parser):
-    parser.add_argument("--binary", type=Path, default=ROOT / "build/splash")
-    parser.add_argument(
-        "--package",
-        type=Path,
-        help="installed model package root (target, draft and tokenizer)",
-    )
-    parser.add_argument("--model", type=model_artifacts.parse_repo_id, required=True)
-    parser.add_argument("--max-context", type=int)
-    parser.add_argument("--max-memory")
-    parser.add_argument("--kv-format", choices=("int8", "bf16"), default="int8")
-    parser.add_argument("--startup-timeout", type=float, default=1800)
+# What a persistent cache keeps under its --cache-dir, one directory per
+# namespace (runtime/engine/CacheDirectory.cpp): the tier's files, the lock,
+# and while a process serves or a start is on probation, a mark of that.
+CACHE_NAMESPACE = re.compile(r"[0-9a-f]{1,64}")
+CACHE_FILES = {"kv.slots", "kv.records", "state.slots", "state.records"}
 
 
-def resolve_server_arguments(arguments):
-    if arguments.package is None:
-        arguments.package = model_artifacts.installed_root(
-            model_artifacts.MODELS, arguments.model
-        )
-    return arguments
-
-
-def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    add_server_arguments(parser)
-    return resolve_server_arguments(parser.parse_args(argv))
-
-
-def main(argv=None) -> int:
-    arguments = parse_args(argv)
-    server = RealServer(arguments)
+@contextlib.contextmanager
+def serving(arguments, **options):
+    """A ready RealServer of arguments with these options, whose log's tail
+    is printed when anything fails while it serves; closed afterwards."""
+    server = RealServer(arguments, **options)
     try:
         validate_status(
             server.wait_ready(arguments.startup_timeout), arguments.kv_format
         )
-        run(server.port, arguments.model)
-        validate_status(request(server.port, "GET", "/status")[1], arguments.kv_format)
-        print("http smoke: PASS", flush=True)
-        return 0
+        yield server
     except Exception:
         print(server.tail(), file=sys.stderr)
         raise
     finally:
         server.close()
+
+
+def require_closed_cache(root: Path) -> None:
+    """The one cache under root is as a clean close leaves it: a 0700
+    namespace directory of the tier's files and a lock nobody holds, without
+    a mark of serving or probation."""
+    entries = sorted(root.iterdir())
+    require(
+        len(entries) == 1
+        and CACHE_NAMESPACE.fullmatch(entries[0].name) is not None
+        and entries[0].is_dir(),
+        f"the cache directory holds {[entry.name for entry in entries]}",
+    )
+    directory = entries[0]
+    mode = stat.S_IMODE(directory.stat().st_mode)
+    require(mode == 0o700, f"the cache namespace has mode {mode:o}")
+    names = {path.name for path in directory.iterdir()}
+    require(names == CACHE_FILES | {"lock"}, f"the closed cache holds {sorted(names)}")
+    with (directory / "lock").open("rb") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise SmokeFailure("a stopped server still holds the cache lock") from None
+
+
+def run_persistent_cache(arguments) -> None:
+    """A conversation's prefix across a clean restart, in a fresh cache
+    directory: the first server answers a prompt deep enough for its restore
+    point to be written, and stops; the second takes the point back, and the
+    conversation's next turn restores the prompt from disk. Each stop must
+    close the cache cleanly."""
+    nonce = uuid.uuid4().hex
+    conversation = chat_body(
+        arguments.model,
+        f"{filler(nonce, 'persistent', 100)} Reply with one short word.",
+    )
+    with tempfile.TemporaryDirectory(prefix="splash-persistent-cache-") as directory:
+        root = Path(directory)
+        with serving(arguments, cache_dir=root) as server:
+            disk = runtime_status(server.port)["disk"]
+            require(
+                disk["persistent"] and disk["taken_back"]["states"] == 0,
+                f"a fresh persistent cache started with {disk!r}",
+            )
+            code, answer = request(
+                server.port, "POST", "/v1/chat/completions", conversation, timeout=300
+            )
+            require(code == 200, f"the first turn failed with HTTP {code}: {answer!r}")
+            prompt_tokens = answer["usage"]["prompt_tokens"]
+            points = runtime_status(server.port)["disk"]["write_behind"]
+            require(
+                points["waiting"] + points["durable"] >= 1,
+                f"the first turn left no restore point to write: {points!r}",
+            )
+            server.stop()
+        require_closed_cache(root)
+        conversation["messages"] += [
+            {
+                "role": "assistant",
+                "content": answer["choices"][0]["message"]["content"],
+            },
+            {"role": "user", "content": "Reply with one more short word."},
+        ]
+        with serving(arguments, cache_dir=root) as server:
+            before = runtime_status(server.port)
+            taken = before["disk"]["taken_back"]
+            require(
+                taken["states"] >= 1
+                and taken["kv_blocks"] >= 1
+                and taken["left_behind"] == 0,
+                f"the restart took back {taken!r}",
+            )
+            code, reply = request(
+                server.port, "POST", "/v1/chat/completions", conversation, timeout=300
+            )
+            require(code == 200, f"the next turn failed with HTTP {code}: {reply!r}")
+            after = runtime_status(server.port)
+            states = after["state"]["disk_hits"] - before["state"]["disk_hits"]
+            restored = (
+                after["cache"]["kv_disk_hit_tokens"]
+                - before["cache"]["kv_disk_hit_tokens"]
+            )
+            reused = after["cache"]["reused_tokens"] - before["cache"]["reused_tokens"]
+            require(states >= 1, "the next turn restored no state from disk")
+            # The tail past the restore point's block boundary is recomputed.
+            require(
+                min(restored, reused) * 10 >= prompt_tokens * 9,
+                f"the next turn restored {restored} and reused {reused} of the "
+                f"first turn's {prompt_tokens} prompt tokens",
+            )
+            server.stop()
+        require_closed_cache(root)
+    print(
+        f"persistent cache restart: PASS ({restored}/{prompt_tokens} from disk)",
+        flush=True,
+    )
+
+
+def add_server_arguments(parser):
+    parser.add_argument("--binary", type=Path, default=ROOT / "build/splash")
+    parser.add_argument(
+        "--model-root",
+        type=Path,
+        help="installed model root (target, draft and tokenizer)",
+    )
+    parser.add_argument("--model", type=serve_options.parse_model_id, required=True)
+    parser.add_argument("--max-context", type=int)
+    parser.add_argument("--max-memory")
+    parser.add_argument("--max-cache-disk")
+    parser.add_argument("--max-image-pixels", type=int)
+    parser.add_argument("--kv-format", choices=("int8", "bf16"), default="int8")
+    parser.add_argument("--startup-timeout", type=float, default=1800)
+
+
+def resolve_server_arguments(arguments):
+    """Serve --model-root, or else the selection link of --model."""
+    if arguments.model_root is None:
+        arguments.model_root = model_artifacts.selection_link(
+            model_artifacts.MODELS, arguments.model
+        )
+    return arguments
+
+
+def hold_model_root(arguments):
+    """As splash serve does, serve every server this process starts, and its
+    tokenizer, from one assembly, which installations keep while it is held:
+    point arguments.model_root at the assembly it links now, held until the
+    process exits by arguments.held_record (None for a legacy package). The
+    installation that collects an assembly is the one of the models root it
+    was built in (models/.resolved/<record>), which may be another
+    checkout's."""
+    resolved = arguments.model_root.resolve()
+    models_root = (
+        resolved.parent.parent
+        if resolved.parent.name == ".resolved"
+        else model_artifacts.MODELS
+    )
+    arguments.model_root, arguments.held_record = assembly.hold(
+        arguments.model_root, models_root
+    )
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_server_arguments(parser)
+    parser.add_argument(
+        "--persistent-cache",
+        action="store_true",
+        help="instead of the smoke, check a conversation's prefix across a clean "
+        "restart of a server with --persistent-cache in a fresh cache directory "
+        "(needs --max-cache-disk)",
+    )
+    arguments = parser.parse_args(argv)
+    if arguments.persistent_cache and arguments.max_cache_disk is None:
+        parser.error("--persistent-cache needs --max-cache-disk")
+    return resolve_server_arguments(arguments)
+
+
+def main(argv=None) -> int:
+    arguments = parse_args(argv)
+    hold_model_root(arguments)
+    if arguments.persistent_cache:
+        run_persistent_cache(arguments)
+        return 0
+    with serving(arguments) as server:
+        run(server.port, arguments.model)
+        validate_status(request(server.port, "GET", "/status")[1], arguments.kv_format)
+    print("http smoke: PASS", flush=True)
+    return 0
 
 
 if __name__ == "__main__":

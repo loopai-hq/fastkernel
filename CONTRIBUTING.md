@@ -1,7 +1,7 @@
 <!-- Modified by meowkernels. -->
 # Contributing
 
-Issues are welcome at [github.com/abhishekgahlot2/fastkernel](https://github.com/abhishekgahlot2/fastkernel/issues):
+Issues are welcome at [github.com/loopai-hq/fastkernel](https://github.com/loopai-hq/fastkernel/issues):
 bugs, questions about running fastkernel on your Mac, and measurements from Macs we haven't measured. Include the
 commit, the Mac (chip, GPU cores, memory), the macOS version and the command you ran.
 

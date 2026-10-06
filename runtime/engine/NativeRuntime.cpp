@@ -1,8 +1,11 @@
 #include "engine/NativeRuntime.hpp"
+#include "AwakeClock.hpp"
+#include "StderrLine.hpp"
+#include "metal/MetalBackend.hpp"
 
 #include <algorithm>
 #include <chrono>
-#include <cmath>
+#include <iomanip>
 #include <limits>
 #include <stdexcept>
 #include <type_traits>
@@ -10,128 +13,72 @@
 #include <variant>
 
 namespace splash::engine {
-namespace {
 
-static_assert(protocol::kMaximumScoreOptions ==
-                  model::ExecutionLimits::maximumScoreOptions,
-              "native protocol and model score option bounds must match");
-static_assert(protocol::kMinimumScoreOptions ==
-                  model::ExecutionLimits::minimumScoreOptions,
-              "native protocol and model score option bounds must match");
-
-RequestPriority mapPriority(protocol::RequestPriority priority) {
-  switch (priority) {
-  case protocol::RequestPriority::Foreground:
-    return RequestPriority::Foreground;
-  case protocol::RequestPriority::Normal:
-    return RequestPriority::Normal;
-  case protocol::RequestPriority::Background:
-    return RequestPriority::Background;
-  }
-  throw std::invalid_argument("invalid protocol priority");
+uint64_t systemUnixMicros() noexcept {
+  const auto now = std::chrono::system_clock::now().time_since_epoch();
+  return static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(now).count());
 }
 
-BatchCohort mapCohort(protocol::Cohort cohort) {
-  switch (cohort) {
-  case protocol::Cohort::Greedy:
-    return BatchCohort::Greedy;
-  case protocol::Cohort::Sampling:
-    return BatchCohort::Sampling;
-  case protocol::Cohort::Constrained:
-    return BatchCohort::Constrained;
-  }
-  throw std::invalid_argument("invalid protocol cohort");
+double awakeMilliseconds() noexcept {
+  const auto now = AwakeClock::now().time_since_epoch();
+  return std::chrono::duration<double, std::milli>(now).count();
 }
 
-ConstraintMode mapConstraint(protocol::ConstraintMode constraint) {
-  switch (constraint) {
-  case protocol::ConstraintMode::None:
-    return ConstraintMode::None;
-  case protocol::ConstraintMode::TokenMask:
-    return ConstraintMode::TokenMask;
-  }
-  throw std::invalid_argument("invalid protocol constraint mode");
-}
-
-protocol::CacheDisposition mapCacheDisposition(EngineCacheStatus status) {
-  switch (status) {
-  case EngineCacheStatus::Miss:
-    return protocol::CacheDisposition::Miss;
-  case EngineCacheStatus::PrefixHit:
-    return protocol::CacheDisposition::PrefixHit;
-  }
-  throw std::logic_error("invalid engine cache status");
-}
-
-protocol::FinishReason mapFinishReason(EngineFinishReason reason) {
-  switch (reason) {
-  case EngineFinishReason::Stop:
-    return protocol::FinishReason::Stop;
-  case EngineFinishReason::Length:
-    return protocol::FinishReason::Length;
-  case EngineFinishReason::Cancelled:
-    return protocol::FinishReason::Cancelled;
-  }
-  throw std::logic_error("invalid engine finish reason");
-}
-
-} // namespace
-
-NativeRuntime::NativeRuntime(NativeLoopConfig config, engine::Cache &cache,
-                             model::Model &model, ByteSink output,
-                             StatusProvider statusProvider,
-                             NativeLoopClocks clocks,
+NativeRuntime::NativeRuntime(NativeLoopConfig config, double idleReleaseSeconds,
+                             engine::Cache &cache, model::Model &model,
+                             ByteSink output, StatusProvider statusProvider,
                              protocol::ProtocolLimits limits)
-    : config_(std::move(config)), output_(std::move(output)),
-      statusProvider_(std::move(statusProvider)), clocks_(std::move(clocks)),
-      limits_(limits), parser_(limits_),
-      core_(config_.engine, cache, model, *this) {
-  if (!config_.engineInstanceId || !config_.maskWordsPerToken || !output_ ||
-      !statusProvider_) {
-    throw std::invalid_argument("invalid native engine loop config");
-  }
-  NativeLoopClocks defaults = defaultClocks();
-  if (!clocks_.unixMicros) {
-    clocks_.unixMicros = std::move(defaults.unixMicros);
-  }
-  if (!clocks_.monotonicMilliseconds) {
-    clocks_.monotonicMilliseconds = std::move(defaults.monotonicMilliseconds);
-  }
+    : config_(std::move(config)), idleReleaseSeconds_(idleReleaseSeconds),
+      output_(std::move(output)),
+      statusProvider_(std::move(statusProvider)), limits_(limits),
+      parser_(limits_), core_(config_.engine, cache, model, *this) {
+  if (!output_ || !statusProvider_ || !config_.metrics || !config_.weights ||
+      !config_.unixMicros || !config_.monotonicMilliseconds)
+    throw std::invalid_argument("the native engine loop lacks a component it needs");
+  if (!(idleReleaseSeconds_ > 0.0))
+    throw std::invalid_argument("the idle release must be positive");
+  if (auto issue = protocol::validateLimits(limits_))
+    throw std::invalid_argument(issue->describe());
+  idleSinceMilliseconds_ = config_.monotonicMilliseconds();
 }
 
 bool NativeRuntime::receive(std::span<const uint8_t> bytes) {
   if (closeConnection_)
     return false;
-  size_t offset = 0;
-  while (offset < bytes.size() && !closeConnection_) {
-    protocol::ParseStep step = parser_.consume(bytes.subspan(offset));
-    offset += step.consumedBytes;
-    if (step.issue)
-      return handleIssue(std::move(*step.issue));
-    if (step.frame) {
+  try {
+    size_t offset = 0;
+    while (offset < bytes.size() && !closeConnection_) {
+      protocol::ParseStep step = parser_.consume(bytes.subspan(offset));
+      offset += step.consumedBytes;
+      if (step.issue)
+        return handleIssue(std::move(*step.issue));
+      if (!step.frame)
+        continue;
       // The parser is already past a frame it yielded, so a request-scoped
       // decode failure leaves the frames behind it to be processed.
-      auto decoded = protocol::decodeFrame(*step.frame, limits_);
+      const protocol::FrameType type = step.frame->type;
+      auto decoded = protocol::decodeFrame(std::move(*step.frame), limits_);
       if (decoded) {
         if (!handle(*decoded.value))
           return false;
-      } else if (step.frame->type == protocol::FrameType::MaskResponse &&
+      } else if (type == protocol::FrameType::MaskResponse &&
                  decoded.issue->failureClass ==
                      protocol::FailureClass::RequestError) {
         if (!handleMaskIssue(std::move(*decoded.issue)))
           return false;
       } else {
-        if (step.frame->type == protocol::FrameType::Request &&
+        if (type == protocol::FrameType::Request &&
             telemetry_.contains(decoded.issue->requestId)) {
           decoded.issue->failureClass = protocol::FailureClass::ProtocolFatal;
         }
         if (!handleIssue(std::move(*decoded.issue)))
           return false;
       }
-    } else if (!step.consumedBytes) {
-      engineError("protocol_stalled", "protocol parser made no input progress");
-      return false;
     }
+  } catch (...) {
+    executionFailed(std::current_exception());
+    return false;
   }
   return !closeConnection_;
 }
@@ -149,7 +96,13 @@ bool NativeRuntime::tick() {
   if (closeConnection_ || !engineHealthy_)
     return false;
   try {
-    return core_.tick(clocks_.monotonicMilliseconds());
+    // The engine runs no request until its weights are back, taken back a
+    // part per tick so that frames are answered between them.
+    if (restoreStarted_) {
+      restoreWeights();
+      return true;
+    }
+    return core_.tick(config_.monotonicMilliseconds());
   } catch (...) {
     executionFailed(std::current_exception());
   }
@@ -167,12 +120,43 @@ bool NativeRuntime::runControl(const std::function<bool()> &control) {
   return false;
 }
 
+bool NativeRuntime::flushRestorePoints() {
+  if (!engineHealthy_)
+    return false;
+  try {
+    return core_.flushRestorePoints();
+  } catch (...) {
+    executionFailed(std::current_exception());
+  }
+  return false;
+}
+
+void NativeRuntime::releaseIdleWeights() {
+  if (config_.weights->released() || !core_.idle() ||
+      config_.monotonicMilliseconds() - idleSinceMilliseconds_ <
+          1000.0 * idleReleaseSeconds_)
+    return;
+  config_.weights->release();
+  logLine("Weights released after ", idleReleaseSeconds_,
+          " s without a request; the next request restores them");
+}
+
+void NativeRuntime::restoreWeights() {
+  if (!config_.weights->restore())
+    return;
+  ++weightRestores_;
+  const double now = config_.monotonicMilliseconds();
+  idleSinceMilliseconds_ = now;
+  logLine("Weights restored in ", std::fixed, std::setprecision(2),
+          (now - *restoreStarted_) / 1000.0, " s");
+  restoreStarted_.reset();
+}
+
 void NativeRuntime::executionFailed(std::exception_ptr failure) {
   try {
     std::rethrow_exception(failure);
   } catch (const metal::MetalBackendError &error) {
-    if (config_.metrics)
-      config_.metrics->metalFailed();
+    config_.metrics->metalFailed();
     engineError("metal_execution_failed", error.what());
   } catch (const std::exception &error) {
     engineError("engine_execution_failed", error.what());
@@ -187,26 +171,24 @@ void NativeRuntime::announceReady() {
   }
   if (ready_)
     throw std::logic_error("ready was already announced");
-  if (!send(protocol::ReadyEvent{config_.engineInstanceId,
-                                 model::ExecutionLimits::maximumBatchWidth,
+  if (!send(protocol::ReadyEvent{model::ExecutionLimits::maximumBatchWidth,
                                  config_.engine.maxContext,
-                                 protocol::kNativeFeatureBits})) {
+                                 config_.engine.maxImagePatches != 0})) {
     throw std::runtime_error("failed to serialize ready event");
   }
   ready_ = true;
+  // The idle release counts from here: warmup is not idleness.
+  idleSinceMilliseconds_ = config_.monotonicMilliseconds();
 }
 
 std::optional<double> NativeRuntime::millisecondsUntilNextWakeup() const {
   auto wakeup = core_.nextWakeupMilliseconds();
   if (!wakeup)
     return std::nullopt;
-  double now = clocks_.monotonicMilliseconds();
-  if (!std::isfinite(now))
-    return 0.0;
-  return std::max(0.0, *wakeup - now);
+  return std::max(0.0, *wakeup - config_.monotonicMilliseconds());
 }
 
-bool NativeRuntime::handle(protocol::Message &message) {
+bool NativeRuntime::handle(protocol::ClientMessage &message) {
   return std::visit(
       [&](auto &typed) -> bool {
         using T = std::decay_t<decltype(typed)>;
@@ -216,14 +198,8 @@ bool NativeRuntime::handle(protocol::Message &message) {
           return handleCancel(typed);
         } else if constexpr (std::is_same_v<T, protocol::MaskResponseFrame>) {
           return handleMask(typed);
-        } else if constexpr (std::is_same_v<T, protocol::StatusRequestFrame>) {
-          return handleStatus(typed);
         } else {
-          protocol::ProtocolIssue issue;
-          issue.failureClass = protocol::FailureClass::ProtocolFatal;
-          issue.code = protocol::IssueCode::InvalidEnumValue;
-          issue.message = "client sent a server-only native protocol message";
-          return handleIssue(std::move(issue));
+          return handleStatus(typed);
         }
       },
       message);
@@ -235,25 +211,18 @@ bool NativeRuntime::handleRequest(protocol::RequestFrame &request) {
                         protocol::IssueCode::InvalidRequestId,
                         request.requestId, "request id is already active"});
   }
-  if (!ready_) {
-    requestError(request.requestId, "engine_not_ready",
-                 "engine warmup has not completed", true);
-    return true;
-  }
-  uint64_t nowUnix = clocks_.unixMicros();
-  double nowMonotonic = clocks_.monotonicMilliseconds();
-  if (!std::isfinite(nowMonotonic) ||
-      request.absoluteDeadlineUnixMicros <= nowUnix) {
-    requestError(request.requestId, "deadline_exceeded",
-                 "request deadline elapsed before admission");
-    return true;
-  }
-  uint64_t absoluteRemaining = request.absoluteDeadlineUnixMicros - nowUnix;
-  uint64_t remaining =
-      std::min(absoluteRemaining, request.remainingDeadlineMicros);
+  const uint64_t nowUnix = config_.unixMicros();
+  const double nowMonotonic = config_.monotonicMilliseconds();
+  const uint64_t remaining =
+      request.absoluteDeadlineUnixMicros > nowUnix
+          ? std::min(request.absoluteDeadlineUnixMicros - nowUnix,
+                     request.remainingDeadlineMicros)
+          : 0;
   if (!remaining) {
-    requestError(request.requestId, "deadline_exceeded",
-                 "request deadline elapsed before admission");
+    const LaneOutcomeWire deadline =
+        laneOutcomeWire(LaneOutcome::DeadlineExceeded);
+    requestError(request.requestId, std::string(deadline.code),
+                 std::string(kDeadlineExceededMessage), deadline.retryable);
     return true;
   }
 
@@ -263,75 +232,40 @@ bool NativeRuntime::handleRequest(protocol::RequestFrame &request) {
   try {
     EngineRequest engineRequest;
     engineRequest.id = request.requestId;
-    engineRequest.priority = mapPriority(request.priority);
-    engineRequest.cohort = mapCohort(request.cohort);
+    engineRequest.priority = request.priority;
     engineRequest.prompt = std::move(request.promptTokens);
-    engineRequest.images.reserve(request.imageSpans.size());
-    for (const protocol::ImageSpanFrame &span : request.imageSpans) {
-      engineRequest.images.push_back({span.offset, span.tokens, span.gridHeight,
-                                      span.gridWidth, span.digestLo,
-                                      span.digestHi});
-    }
+    engineRequest.generationPromptTokens = request.generationPromptTokens;
+    engineRequest.images = std::move(request.imageSpans);
     engineRequest.imagePixels = std::move(request.imagePixels);
     engineRequest.maxNewTokens = request.logicalMaxOutputTokens;
     engineRequest.scoreTokens = std::move(request.scoreTokens);
-    engineRequest.sampling = {request.sampling.temperature,
-                              request.sampling.topP, request.sampling.topK,
-                              request.seed};
-    engineRequest.constraint = mapConstraint(request.constraint);
-    engineRequest.returnProgress = request.returnProgress;
+    engineRequest.sampling = request.sampling;
+    engineRequest.constraint = request.constraint;
+    engineRequest.flags = request.flags & kRequestFlagBits;
+    engineRequest.returnProgress =
+        request.flags & protocol::kReturnProgressFlag;
     engineRequest.deadlineMilliseconds =
         nowMonotonic + double(remaining) / 1000.0;
     core_.submit(std::move(engineRequest));
   } catch (const std::invalid_argument &error) {
     requestError(request.requestId, "invalid_request", error.what());
     return true;
-  } catch (const std::exception &error) {
-    engineError("request_admission_failed", error.what());
-    return false;
-  } catch (...) {
-    engineError("request_admission_failed",
-                "unknown request admission exception");
-    return false;
   }
-  try {
-    auto [_, inserted] = telemetry_.emplace(
-        request.requestId,
-        RequestTelemetry{.arrivedMilliseconds = nowMonotonic});
-    if (!inserted) {
-      throw std::logic_error("accepted request already has native telemetry");
-    }
-  } catch (const std::exception &error) {
-    // Core admission has already committed. Any failure in the matching
-    // native registry is an engine invariant failure; treating
-    // it as a bad client request would continue with split ownership.
-    engineError("request_admission_failed", error.what());
-    return false;
-  } catch (...) {
-    engineError("request_admission_failed",
-                "unknown request telemetry exception");
-    return false;
-  }
+  telemetry_.emplace(request.requestId,
+                     RequestTelemetry{.arrivedMilliseconds = nowMonotonic});
+  if (telemetry_.size() == 1 && config_.holdingRequests)
+    config_.holdingRequests(true);
+  // Released weights are written back before the engine runs the request
+  // (tick()); a failure to restore them stops the engine.
+  if (config_.weights->released() && !restoreStarted_)
+    restoreStarted_ = nowMonotonic;
   return true;
 }
 
 bool NativeRuntime::handleCancel(const protocol::CancelFrame &cancel) {
-  if (!telemetry_.contains(cancel.requestId)) {
-    // Cancel can arrive after the terminal event; treat it as a no-op.
-    return true;
-  }
-  try {
+  // Cancel can arrive after the terminal event; it is then a no-op.
+  if (telemetry_.contains(cancel.requestId))
     core_.cancel(cancel.requestId);
-  } catch (const std::exception &error) {
-    // A decoded cancel for live telemetry has no remaining client-side
-    // semantic failure. Core cancellation/release exceptions indicate
-    // inconsistent engine ownership and must stop this process.
-    engineError("cancel_failed", error.what());
-    return false;
-  } catch (...) {
-    engineError("cancel_failed", "unknown cancellation exception");
-    return false;
-  }
   return true;
 }
 
@@ -340,95 +274,55 @@ bool NativeRuntime::handleMask(const protocol::MaskResponseFrame &mask) {
     // A CPU mask calculation can finish after the request ends.
     return true;
   }
-  auto failMaskRequest = [&](std::string code, std::string message) -> bool {
-    try {
-      core_.failRequest(mask.requestId, std::move(code), std::move(message));
-      return true;
-    } catch (const std::exception &error) {
-      engineError("mask_response_failure", error.what());
-    } catch (...) {
-      engineError("mask_response_failure", "unknown mask terminal exception");
-    }
-    return false;
-  };
-
   auto found = pendingMasks_.find(mask.requestId);
   if (found == pendingMasks_.end() ||
       found->second.maskRequestId != mask.maskRequestId ||
       found->second.expectedWords != mask.maskWords.size()) {
-    return failMaskRequest("invalid_mask_response",
-                           "mask response does not match the pending request");
+    core_.failRequest(mask.requestId, LaneOutcome::InvalidMask,
+                      "mask response does not match the pending request");
+    return true;
   }
-  try {
-    core_.provideMask(mask.requestId, mask.maskWords);
-    pendingMasks_.erase(found);
-  } catch (const std::invalid_argument &error) {
-    // Correctly framed mask contents (for example an all-zero row) are a
-    // request-scoped semantic error. Internal state/allocator failures
-    // are handled below as engine-unhealthy.
-    return failMaskRequest("invalid_mask_response", error.what());
-  } catch (const std::exception &error) {
-    engineError("mask_response_failure", error.what());
-    return false;
-  } catch (...) {
-    engineError("mask_response_failure", "unknown token-mask exception");
-    return false;
-  }
+  // Erased before the engine reads the mask: unusable contents fail the
+  // request there, and its failure event erases the same entry.
+  pendingMasks_.erase(found);
+  core_.provideMask(mask.requestId, mask.maskWords);
   return true;
 }
 
 bool NativeRuntime::handleStatus(const protocol::StatusRequestFrame &status) {
-  try {
-    std::string json = statusProvider_();
-    if (json.empty())
-      throw std::runtime_error("empty status document");
-    return send(protocol::StatusJsonEvent{
-        status.correlationId, protocol::kStatusSchemaVersion, std::move(json)});
-  } catch (const std::exception &error) {
-    engineError("status_failed", error.what());
-    return false;
-  }
+  std::string json = statusProvider_();
+  if (json.empty())
+    throw std::runtime_error("empty status document");
+  return send(protocol::StatusJsonEvent{status.correlationId, std::move(json)});
 }
 
 bool NativeRuntime::handleMaskIssue(protocol::ProtocolIssue issue) {
-  if (!issue.requestId)
-    return handleIssue(std::move(issue));
   if (!telemetry_.contains(issue.requestId)) {
     // Once framing establishes the request id, ignore late mask responses
     // for requests that have already ended, including invalid mask contents.
     return true;
   }
-  try {
-    core_.failRequest(issue.requestId,
-                      std::string(protocol::issueCodeName(issue.code)),
-                      std::move(issue.message));
-  } catch (const std::exception &error) {
-    engineError("mask_response_failure", error.what());
-    return false;
-  } catch (...) {
-    engineError("mask_response_failure",
-                "unknown malformed mask response failure");
-    return false;
-  }
+  core_.failRequest(issue.requestId, LaneOutcome::InvalidMask,
+                    std::string(protocol::issueCodeName(issue.code)) + ": " +
+                        issue.message);
   return !closeConnection_;
 }
 
 bool NativeRuntime::handleIssue(protocol::ProtocolIssue issue) {
-  protocol::FailureClass classification = issue.failureClass;
-  uint64_t requestId = issue.requestId;
-  if (classification == protocol::FailureClass::RequestError && !requestId) {
-    classification = protocol::FailureClass::ProtocolFatal;
+  const protocol::FailureClass classification = issue.failureClass;
+  if (classification == protocol::FailureClass::EngineUnhealthy) {
+    engineError(std::string(protocol::issueCodeName(issue.code)),
+                std::move(issue.message));
+    return false;
   }
   send(protocol::ErrorEvent{
       classification,
-      classification == protocol::FailureClass::RequestError ? requestId : 0,
+      classification == protocol::FailureClass::RequestError ? issue.requestId
+                                                             : 0,
       false, std::string(protocol::issueCodeName(issue.code)),
       std::move(issue.message)});
   if (protocol::connectionMustClose(classification)) {
     closeConnection_ = true;
-    if (classification == protocol::FailureClass::EngineUnhealthy) {
-      engineHealthy_ = false;
-    }
     return false;
   }
   return true;
@@ -441,23 +335,27 @@ void NativeRuntime::requestError(uint64_t requestId, std::string code,
 }
 
 void NativeRuntime::engineError(std::string code, std::string message) {
+  if (engineFailure_.empty())
+    engineFailure_ = code + ": " + message;
   send(protocol::ErrorEvent{protocol::FailureClass::EngineUnhealthy, 0, false,
                             std::move(code), std::move(message)});
   engineHealthy_ = false;
   closeConnection_ = true;
 }
 
-bool NativeRuntime::send(protocol::Message message) {
+bool NativeRuntime::send(const protocol::EngineEvent &event) {
   if (closeConnection_)
     return false;
-  auto serialized = protocol::serializeMessage(message, limits_);
+  auto serialized = protocol::serializeEvent(event, limits_);
   if (!serialized) {
     // An event the engine cannot put on the wire is an engine defect. Report
     // it once and stop the stream, so the client sees the cause instead of a
     // later frame that contradicts the missing one.
     engineHealthy_ = false;
     closeConnection_ = true;
-    auto report = protocol::serializeMessage(
+    if (engineFailure_.empty())
+      engineFailure_ = "protocol_encode_failed: " + serialized.issue->message;
+    auto report = protocol::serializeEvent(
         protocol::ErrorEvent{protocol::FailureClass::EngineUnhealthy, 0, false,
                              "protocol_encode_failed",
                              serialized.issue->message},
@@ -470,35 +368,38 @@ bool NativeRuntime::send(protocol::Message message) {
     }
     return false;
   }
+  std::string failure;
   try {
     output_(*serialized.value);
+    return true;
+  } catch (const std::exception &error) {
+    failure = error.what();
   } catch (...) {
-    engineHealthy_ = false;
-    closeConnection_ = true;
-    return false;
+    failure = "unknown output exception";
   }
-  return true;
+  if (engineFailure_.empty())
+    engineFailure_ = "output_write_failed: " + failure;
+  engineHealthy_ = false;
+  closeConnection_ = true;
+  return false;
 }
 
 void NativeRuntime::batchCompleted(WorkKind kind, uint32_t width,
                                    uint32_t inputTokens, uint32_t outputTokens,
                                    uint32_t draftedTokens,
                                    uint32_t acceptedDraftTokens,
-                                   double wallMilliseconds) {
-  if (config_.metrics) {
-    config_.metrics->batchCompleted(kind, width, inputTokens, outputTokens,
-                                    draftedTokens, acceptedDraftTokens,
-                                    wallMilliseconds);
-  }
+                                   double wallMilliseconds,
+                                   double cycleMilliseconds) {
+  config_.metrics->batchCompleted(kind, width, inputTokens, outputTokens,
+                                  draftedTokens, acceptedDraftTokens,
+                                  wallMilliseconds, cycleMilliseconds);
 }
 
-void NativeRuntime::started(uint64_t requestId, EngineCacheStatus cacheStatus,
-                            uint32_t matchedTokens, uint32_t stateSlot) {
+void NativeRuntime::started(uint64_t requestId, uint32_t matchedTokens,
+                            uint32_t lane) {
   RequestTelemetry &telemetry = telemetry_.at(requestId);
-  telemetry.startedMilliseconds = clocks_.monotonicMilliseconds();
-  send(protocol::StartEvent{requestId, mapCacheDisposition(cacheStatus),
-                            static_cast<int32_t>(stateSlot), matchedTokens,
-                            config_.engine.maxContext});
+  telemetry.startedMilliseconds = config_.monotonicMilliseconds();
+  send(protocol::StartEvent{requestId, lane, matchedTokens});
 }
 
 void NativeRuntime::promptProgress(uint64_t requestId,
@@ -506,24 +407,22 @@ void NativeRuntime::promptProgress(uint64_t requestId,
   const auto &telemetry = telemetry_.at(requestId);
   send(protocol::PromptProgressEvent{
       requestId, processedTokens,
-      durationMicros(telemetry.startedMilliseconds,
-                     clocks_.monotonicMilliseconds())});
+      durationMicros(telemetry.startedMilliseconds.value(),
+                     config_.monotonicMilliseconds())});
 }
 
 void NativeRuntime::tokens(uint64_t requestId,
                            std::span<const uint32_t> values) {
   RequestTelemetry &telemetry = telemetry_.at(requestId);
-  double now = clocks_.monotonicMilliseconds();
+  double now = config_.monotonicMilliseconds();
   if (!telemetry.firstTokenMilliseconds) {
     telemetry.firstTokenMilliseconds = now;
   }
   uint32_t offset = telemetry.emittedTokens;
   telemetry.emittedTokens += static_cast<uint32_t>(values.size());
-  if (config_.metrics) {
-    config_.metrics->tokens(telemetry.arrivedMilliseconds,
-                            telemetry.lastTokenMilliseconds,
-                            static_cast<uint32_t>(values.size()), now);
-  }
+  config_.metrics->tokens(telemetry.arrivedMilliseconds,
+                          telemetry.lastTokenMilliseconds,
+                          static_cast<uint32_t>(values.size()), now);
   telemetry.lastTokenMilliseconds = now;
   send(protocol::TokensEvent{
       requestId, offset, std::vector<uint32_t>(values.begin(), values.end())});
@@ -537,14 +436,16 @@ void NativeRuntime::maskRequested(uint64_t requestId,
   uint64_t maskRequestId = nextMaskRequestId_++;
   if (!maskRequestId)
     maskRequestId = nextMaskRequestId_++;
+  const uint32_t wordsPerToken =
+      model::maskWordsPerToken(config_.engine.vocabularySize);
   uint64_t maskRows = uint64_t(simulationTokens.size()) + 1;
-  uint64_t expectedWords = uint64_t(config_.maskWordsPerToken) * maskRows;
+  uint64_t expectedWords = uint64_t(wordsPerToken) * maskRows;
   if (!expectedWords || expectedWords > limits_.maxMaskWords) {
     throw std::length_error("token mask dimensions exceed wire limits");
   }
   pendingMasks_.emplace(requestId, PendingMask{maskRequestId, expectedWords});
   send(protocol::MaskRequestEvent{
-      requestId, maskRequestId, config_.maskWordsPerToken,
+      requestId, maskRequestId, wordsPerToken,
       std::vector<uint32_t>(simulationTokens.begin(), simulationTokens.end())});
 }
 
@@ -552,60 +453,42 @@ void NativeRuntime::completed(uint64_t requestId, EngineFinishReason reason,
                               uint32_t promptTokens, uint32_t completionTokens,
                               std::span<const float> optionLogits) {
   RequestTelemetry &telemetry = telemetry_.at(requestId);
-  double now = clocks_.monotonicMilliseconds();
-  double started = telemetry.startedMilliseconds > 0.0
-                       ? telemetry.startedMilliseconds
-                       : telemetry.arrivedMilliseconds;
+  double now = config_.monotonicMilliseconds();
+  // A request that ends before it starts counts from its arrival.
+  double started =
+      telemetry.startedMilliseconds.value_or(telemetry.arrivedMilliseconds);
   double first = telemetry.firstTokenMilliseconds.value_or(now);
   send(protocol::DoneEvent{
-      requestId, mapFinishReason(reason), promptTokens, completionTokens,
+      requestId, reason, promptTokens, completionTokens,
       durationMicros(started, first),
       telemetry.firstTokenMilliseconds ? durationMicros(first, now) : 0,
       durationMicros(telemetry.arrivedMilliseconds, now),
       std::vector<float>(optionLogits.begin(), optionLogits.end())});
-  pendingMasks_.erase(requestId);
-  telemetry_.erase(requestId);
+  ended(requestId, now);
 }
 
-void NativeRuntime::failed(uint64_t requestId, std::string code,
-                           std::string message, bool retryable) {
-  requestError(requestId, std::move(code), std::move(message), retryable);
-  pendingMasks_.erase(requestId);
-  telemetry_.erase(requestId);
-}
-
-void NativeRuntime::capacityExhausted(uint64_t requestId,
-                                      uint32_t requiredKvPages,
-                                      uint32_t availableKvPages,
-                                      uint64_t retryAfterMicros) {
-  send(protocol::CapacityExhaustedEvent{requestId, requiredKvPages,
-                                        availableKvPages, retryAfterMicros});
-  if (config_.metrics) {
+void NativeRuntime::failed(uint64_t requestId, LaneOutcome outcome,
+                           std::string message) {
+  const LaneOutcomeWire wire = laneOutcomeWire(outcome);
+  if (outcome == LaneOutcome::CapacityExhausted)
     config_.metrics->capacityFailed();
-  }
-  pendingMasks_.erase(requestId);
-  telemetry_.erase(requestId);
+  requestError(requestId, std::string(wire.code), std::move(message),
+               wire.retryable);
+  ended(requestId, config_.monotonicMilliseconds());
 }
 
-NativeLoopClocks NativeRuntime::defaultClocks() {
-  return {
-      [] {
-        auto now = std::chrono::system_clock::now().time_since_epoch();
-        return static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::microseconds>(now).count());
-      },
-      [] {
-        auto now = std::chrono::steady_clock::now().time_since_epoch();
-        return std::chrono::duration<double, std::milli>(now).count();
-      }};
+void NativeRuntime::ended(uint64_t requestId, double now) {
+  pendingMasks_.erase(requestId);
+  telemetry_.erase(requestId);
+  idleSinceMilliseconds_ = now;
+  if (telemetry_.empty() && config_.holdingRequests)
+    config_.holdingRequests(false);
 }
 
 uint64_t NativeRuntime::durationMicros(double startMilliseconds,
                                        double endMilliseconds) {
-  if (!std::isfinite(startMilliseconds) || !std::isfinite(endMilliseconds) ||
-      endMilliseconds <= startMilliseconds) {
+  if (endMilliseconds <= startMilliseconds)
     return 0;
-  }
   double micros = (endMilliseconds - startMilliseconds) * 1000.0;
   if (micros >= double(std::numeric_limits<uint64_t>::max())) {
     return std::numeric_limits<uint64_t>::max();

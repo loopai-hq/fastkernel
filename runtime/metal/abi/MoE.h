@@ -7,6 +7,13 @@
 #include <stdint.h>
 #endif
 
+// The expert slots of the routing kernels (ops::MoE): a row's router scores
+// take this many floats, the block's experts first, and the select and
+// grouping kernels run one thread per slot, so a MoE block routes at most
+// this many experts. An affine router stores this many rows: one Q8 storage
+// tile.
+#define SPLASH_MOE_EXPERT_SLOTS 256u
+
 struct MoeRouteParams {
   uint32_t rows;
   uint32_t input_size;
@@ -61,6 +68,21 @@ struct MoeExpertParams {
 
 static_assert(sizeof(MoeExpertParams) == 32,
               "MoE expert parameters are 32 bytes on both sides");
+
+// A GGUF expert pass (ops/MoE.cpp): every routed expert of the projection
+// is one image segment of experts * output_size rows, expert e's planes
+// starting at tile e * output_size / QUANT_TILE_ROWS; the shared expert (id `experts`)
+// has a segment of its own. Formats are GGUF_FMT_* (metal/abi/QuantFormat.h).
+struct MoeGgufExpertParams {
+  uint32_t input_size;
+  uint32_t output_size; // per expert
+  uint32_t experts;
+  uint32_t routed_format;
+  uint32_t shared_format;
+};
+
+static_assert(sizeof(MoeGgufExpertParams) == 20,
+              "MoE GGUF expert parameters are 20 bytes on both sides");
 
 struct MoeCombineParams {
   uint32_t rows;

@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <iterator>
 #include <array>
+#include <charconv>
 #include <chrono>
 #include <thread>
 #include <condition_variable>
@@ -17,7 +18,6 @@
 #include <functional>
 #include <iomanip>
 #include <iostream>
-#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -38,16 +38,6 @@ using splash::benchmark::expectedDraftContextRows;
 namespace {
 
 using Clock = std::chrono::steady_clock;
-
-std::string_view cacheStatusName(EngineCacheStatus status) noexcept {
-  switch (status) {
-  case EngineCacheStatus::Miss:
-    return "miss";
-  case EngineCacheStatus::PrefixHit:
-    return "prefix_hit";
-  }
-  std::terminate();
-}
 
 double milliseconds(Clock::time_point value) {
   return std::chrono::duration<double, std::milli>(value.time_since_epoch())
@@ -77,16 +67,16 @@ public:
   void batchCompleted(WorkKind kind, uint32_t width, uint32_t inputTokens,
                       uint32_t outputTokens,
                       uint32_t draftedTokens, uint32_t acceptedDraftTokens,
-                      double) override {
+                      double, double) override {
     lastBatch_ = {kind, width, inputTokens, outputTokens, draftedTokens,
                   acceptedDraftTokens};
     ++batchSequence_;
   }
 
-  void started(uint64_t requestId, EngineCacheStatus cacheStatus,
-               uint32_t matchedTokens, uint32_t) override {
+  void started(uint64_t requestId, uint32_t matchedTokens,
+               uint32_t) override {
     Observation &value = observations_[requestId];
-    value.cacheStatus = cacheStatusName(cacheStatus);
+    value.cacheStatus = matchedTokens ? "prefix_hit" : "miss";
     value.matchedTokens = matchedTokens;
   }
 
@@ -107,14 +97,10 @@ public:
     observations_[requestId].completed = true;
   }
 
-  void failed(uint64_t requestId, std::string code, std::string message,
-              bool) override {
-    observations_[requestId].failure = std::move(code) + ":" + message;
-  }
-
-  void capacityExhausted(uint64_t requestId, uint32_t, uint32_t,
-                         uint64_t) override {
-    observations_[requestId].failure = "capacity_exhausted";
+  void failed(uint64_t requestId, LaneOutcome outcome,
+              std::string message) override {
+    observations_[requestId].failure =
+        std::string(laneOutcomeWire(outcome).code) + ":" + message;
   }
 
   [[nodiscard]] const Observation &get(uint64_t requestId) const {
@@ -326,7 +312,7 @@ public:
           {}) {
     const auto deadline = Clock::now() + std::chrono::hours(2);
     uint64_t observedBatchSequence = events_.batchSequence();
-    while (!engine_.idle()) {
+    while (!drained()) {
       if (engine_.tick(milliseconds(Clock::now()))) {
         const uint64_t sequence = events_.batchSequence();
         if (sequence != observedBatchSequence) {
@@ -362,6 +348,15 @@ private:
     std::condition_variable condition;
     bool notified = false;
   };
+
+  // Every submitted request has ended and no command is in flight.
+  [[nodiscard]] bool drained() const {
+    const engine::EngineSnapshot counts = engine_.snapshot();
+    return counts.submitted ==
+               counts.completed + counts.cancelled + counts.failed &&
+           !engine_.commandInFlight();
+  }
+
   engine::Engine &engine_;
   Events &events_;
   std::shared_ptr<WakeState> wake_ = std::make_shared<WakeState>();
@@ -375,6 +370,19 @@ std::vector<uint32_t> prompt(uint32_t length, uint64_t salt) {
     token = 100 + static_cast<uint32_t>((state >> 17) % 200000);
   }
   return result;
+}
+
+// What each lookup of a cache check found, for its failure: under host
+// memory pressure the engine evicts the cached prefixes the checks reuse.
+std::string lookups(
+    std::initializer_list<std::reference_wrapper<const Measurement>> requests,
+    uint32_t expectedTokens) {
+  std::string found;
+  for (const Measurement &request : requests)
+    found += request.scenario + "=" + request.cacheStatus + "/" +
+             std::to_string(request.matchedTokens) + " ";
+  return found + "(expected a " + std::to_string(expectedTokens) +
+         "-token hit)";
 }
 
 Measurement runRequest(engine::Engine &engine, Driver &driver,
@@ -454,48 +462,20 @@ Measurement runRequest(engine::Engine &engine, Driver &driver,
   return result;
 }
 
-// Physical KV release is paced by the backing: while an earlier extent
-// release is still in flight, Cache::reclaimCache evicts nothing and its
-// caller retries once releaseDeferred() clears. The benchmark drains follow
-// that contract, bounded well above the backing's own release timeout.
-constexpr std::chrono::seconds kDrainDeadline{120};
-
-void awaitDeferredRelease(engine::Cache &resources,
-                          std::chrono::steady_clock::time_point deadline) {
-  while (resources.releaseDeferred()) {
-    if (std::chrono::steady_clock::now() >= deadline) {
-      throw std::logic_error("native benchmark backing release did not complete");
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-  }
-}
-
+// One reclaim pass evicts every unpinned entry and releases the extents it
+// empties.
 void evictAllCache(engine::Cache &resources) {
-  const auto deadline = std::chrono::steady_clock::now() + kDrainDeadline;
-  for (;;) {
-    awaitDeferredRelease(resources, deadline);
-    static_cast<void>(
-        resources.reclaimCache(std::numeric_limits<uint64_t>::max(), true));
-    const engine::CacheSnapshot snapshot = resources.snapshot();
-    if (!snapshot.stateCache.entries && !snapshot.kvCache.blocks) return;
-    // Evicting KV empties extents whose release is paced; wait and continue.
-    // Entries that remain with no release in flight are a real failure.
-    if (!resources.releaseDeferred())
-      throw std::logic_error("native benchmark cache did not drain");
-  }
+  static_cast<void>(resources.evictAll());
+  const engine::CacheSnapshot snapshot = resources.snapshot();
+  if (snapshot.stateCache.entries || snapshot.pool.pagesPrefix)
+    throw std::logic_error("native benchmark cache did not drain");
 }
 
+// Evicts every cached state, one at a time, and leaves the KV graph intact.
 void evictAllCompositeState(engine::Cache &resources) {
-  const auto deadline = std::chrono::steady_clock::now() + kDrainDeadline;
   while (resources.snapshot().stateCache.entries) {
-    awaitDeferredRelease(resources, deadline);
-    const engine::CacheSnapshot before = resources.snapshot();
-    static_cast<void>(resources.reclaimCache(1, false));
-    const engine::CacheSnapshot after = resources.snapshot();
-    if (after.stateCache.entries >= before.stateCache.entries &&
-        after.pool.residentBackingBytes >= before.pool.residentBackingBytes) {
+    if (!resources.reclaimStateForLane(engine::ReclaimClass::InUse).madeProgress)
       throw std::logic_error("native benchmark state cache made no progress");
-    }
   }
 }
 
@@ -515,7 +495,7 @@ runDecodeThroughput(engine::Engine &engine, Driver &driver,
   // publishes the composite state there and splits its prefill around it, so
   // it would start decoding one command after the deduplicated lanes. Warm
   // the prefix with a one-token request; every lane then resumes from the
-  // published prefix in a single packed prefill and decodes in lockstep.
+  // published prefix in a single ragged prefill and decodes in lockstep.
   {
     EngineRequest warm;
     warm.id = requestId++;
@@ -717,6 +697,34 @@ uint32_t parseSamples(std::string_view value) {
   return static_cast<uint32_t>(parsed);
 }
 
+// A context limit, as serve's --max-context: a positive token count.
+uint32_t parseMaxContext(std::string_view value) {
+  uint32_t tokens = 0;
+  const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), tokens);
+  if (error != std::errc{} || end != value.data() + value.size() || !tokens)
+    throw std::invalid_argument("--max-context takes a positive token count");
+  return tokens;
+}
+
+// --ane-ffn-minimum-rows: the least rows of a chunk the prefill FFN's Neural
+// Engine split takes, a positive count.
+uint32_t parseAneFfnMinimumRows(std::string_view value) {
+  uint32_t rows = 0;
+  const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), rows);
+  if (error != std::errc{} || end != value.data() + value.size() || !rows)
+    throw std::invalid_argument("--ane-ffn-minimum-rows takes a positive row count");
+  return rows;
+}
+
+// --ane-ffn-share: the prefill FFN's Neural Engine share, in [0, 1).
+double parseAneFfnShare(std::string_view value) {
+  double share = 0.0;
+  const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), share);
+  if (error != std::errc{} || end != value.data() + value.size() || !(share >= 0.0 && share < 1.0))
+    throw std::invalid_argument("--ane-ffn-share takes a share in [0, 1)");
+  return share;
+}
+
 double median(std::vector<double> values) {
   if (values.empty())
     throw std::invalid_argument("cannot take the median of no samples");
@@ -726,7 +734,8 @@ double median(std::vector<double> values) {
                            : (values[middle - 1] + values[middle]) / 2.0;
 }
 
-double decodeWallThroughputMedian(
+// The aggregate wall decode throughput of each sample at one width.
+std::vector<double> decodeWallThroughputs(
     std::span<const DecodeThroughputMeasurement> measurements,
     uint32_t width) {
   std::vector<double> values;
@@ -734,21 +743,46 @@ double decodeWallThroughputMedian(
     if (measurement.width == width)
       values.push_back(measurement.aggregateDecodeWallTokensPerSecond);
   }
-  return median(std::move(values));
+  if (values.empty())
+    throw std::invalid_argument("no decode throughput samples at this width");
+  return values;
 }
 
-enum class BenchmarkScenario : uint8_t { All, Decode, Partial, Context, Exact };
+// The scenarios one run measures: decode, partial and context by default, or
+// the comma-separated set --scenario names. exact measures the context
+// lengths as repeated restores instead, so it excludes context.
+struct BenchmarkScenarios final {
+  bool decode = true;
+  bool partial = true;
+  // The short scenario; short is a keyword.
+  bool shortPrompts = false;
+  bool context = true;
+  bool exact = false;
+};
 
-BenchmarkScenario parseScenario(std::string_view value) {
-  if (value == "decode")
-    return BenchmarkScenario::Decode;
-  if (value == "partial")
-    return BenchmarkScenario::Partial;
-  if (value == "context")
-    return BenchmarkScenario::Context;
-  if (value == "exact")
-    return BenchmarkScenario::Exact;
-  throw std::invalid_argument("unknown benchmark scenario");
+BenchmarkScenarios parseScenarios(std::string_view value) {
+  BenchmarkScenarios selected{false, false, false, false, false};
+  for (;;) {
+    const size_t comma = value.find(',');
+    const std::string_view name = value.substr(0, comma);
+    bool *scenario = name == "decode"    ? &selected.decode
+                     : name == "partial" ? &selected.partial
+                     : name == "short"   ? &selected.shortPrompts
+                     : name == "context" ? &selected.context
+                     : name == "exact"   ? &selected.exact
+                                         : nullptr;
+    if (!scenario)
+      throw std::invalid_argument("unknown benchmark scenario");
+    if (*scenario)
+      throw std::invalid_argument("benchmark scenario named twice");
+    *scenario = true;
+    if (comma == std::string_view::npos)
+      break;
+    value.remove_prefix(comma + 1);
+  }
+  if (selected.context && selected.exact)
+    throw std::invalid_argument("exact and context scenarios exclude each other");
+  return selected;
 }
 
 } // namespace
@@ -759,12 +793,24 @@ int main(int argc, char **argv) {
     if (argc < 3) {
       std::cerr << "usage: backend-benchmark METALLIB MODEL_ROOT "
                    "[--samples COUNT] [--progress PATH] "
-                   "[--scenario decode|partial|context|exact]\n";
+                   "[--scenario NAME[,NAME...]] [--ane-ffn-share SHARE "
+                   "[--ane-ffn-minimum-rows ROWS]] [--max-context TOKENS]\n"
+                   "  NAME: decode, partial, short, context or exact "
+                   "(default: decode,partial,context)\n"
+                   "  SHARE: the prefill FFN's Neural Engine share in [0, 1) "
+                   "to run instead of calibrating one (0: GPU alone)\n"
+                   "  ROWS: the least rows of a chunk that share takes "
+                   "(default: 512)\n"
+                   "  TOKENS: the context the engine serves, as serve's "
+                   "--max-context (default: what memory holds)\n";
       return 2;
     }
     uint32_t samples = 1;
-    BenchmarkScenario selected = BenchmarkScenario::All;
+    BenchmarkScenarios selected;
     std::optional<std::filesystem::path> progressPath;
+    std::optional<double> aneFfnShare;
+    std::optional<uint32_t> aneFfnMinimumRows;
+    uint32_t maxContext = 0;
     for (int index = 3; index < argc; index += 2) {
       if (index + 1 >= argc)
         throw std::invalid_argument("benchmark option requires a value");
@@ -774,7 +820,13 @@ int main(int argc, char **argv) {
       } else if (option == "--progress") {
         progressPath = std::filesystem::path(argv[index + 1]);
       } else if (option == "--scenario") {
-        selected = parseScenario(argv[index + 1]);
+        selected = parseScenarios(argv[index + 1]);
+      } else if (option == "--ane-ffn-share") {
+        aneFfnShare = parseAneFfnShare(argv[index + 1]);
+      } else if (option == "--ane-ffn-minimum-rows") {
+        aneFfnMinimumRows = parseAneFfnMinimumRows(argv[index + 1]);
+      } else if (option == "--max-context") {
+        maxContext = parseMaxContext(argv[index + 1]);
       } else {
         throw std::invalid_argument("unknown benchmark option");
       }
@@ -783,19 +835,17 @@ int main(int argc, char **argv) {
       progress = std::make_unique<ProgressJournal>(*progressPath, samples);
 
     engine::RuntimeBootstrapConfig bootstrapConfig;
+    engine::RuntimeMetrics metrics;
+    bootstrapConfig.nativeLoop.metrics = &metrics;
     auto &config = bootstrapConfig.resources;
     config.metallibPath = std::filesystem::path(argv[1]);
     config.modelRoot = std::filesystem::path(argv[2]);
-    config.model = model::inspectModelPackage(config.modelRoot);
+    config.model = model::inspectModelRoot(config.modelRoot);
     config.buildId = SPLASH_BUILD_ID;
+    config.aneFfn = engine::AneFfnSetting::fromGiven(aneFfnShare, aneFfnMinimumRows);
+    bootstrapConfig.nativeLoop.engine.maxContext = maxContext;
     const std::string modelRoot = config.modelRoot.string();
     const auto &capabilities = config.model.capabilities;
-    const uint32_t maskWordsPerToken = (capabilities.vocabularySize + 31) / 32;
-    bootstrapConfig.nativeLoop.maskWordsPerToken = maskWordsPerToken;
-    bootstrapConfig.protocolLimits.maxTokenBatch = model::ExecutionLimits::maximumStepTokens;
-    bootstrapConfig.protocolLimits.maxSimulationTokens = capabilities.draftQueryRows;
-    bootstrapConfig.protocolLimits.maxMaskWords =
-        maskWordsPerToken * (capabilities.draftQueryRows + 1);
     // Complete production warmup and memory audit before measuring. Retry
     // host-capacity refusals while memory from the previous engine settles.
     std::unique_ptr<engine::RuntimeBootstrap> bootstrap;
@@ -822,22 +872,23 @@ int main(int argc, char **argv) {
         std::this_thread::sleep_for(std::chrono::seconds(2));
       }
     }
-    if (!bootstrap->report().ready || !bootstrap->nativeLoop().ready() ||
-        !bootstrap->nativeLoop().engineHealthy() || !bootstrap->nativeLoop().idle() ||
+    // start() returns once the loop has announced Ready.
+    if (!bootstrap->nativeLoop().engineHealthy() ||
         bootstrap->nativeLoop().commandInFlight())
       throw std::runtime_error("benchmark production bootstrap did not finish idle and ready");
     // Non-owning borrows. This scope never feeds or ticks the bootstrap loop;
     // its Engine stays empty. The later benchmark Engine is the sole request
     // driver and is destroyed before the bootstrap owner/model/shared cache.
     auto *resources = &bootstrap->resources();
+    // The Neural Engine split startup calibrated, or the one given.
+    const double ranAneFfnShare = resources->aneFfnShare();
+    const uint32_t ranAneFfnMinimumRows = resources->aneFfnMinimumRows();
     auto *executor = &bootstrap->modelRuntime();
     const auto &cacheIdentity = resources->cacheIdentity();
     const std::string identity =
         "{\"model_root\":" + json::quote(modelRoot) +
         ",\"loaded_model_layout_sha256\":" +
-        json::quote(cacheIdentity.modelLayoutSha256) +
-        ",\"runtime_cache_namespace\":" +
-        json::quote(cacheIdentity.namespaceSha256) + ",\"device\":" +
+        json::quote(cacheIdentity.modelLayoutSha256) + ",\"device\":" +
         json::quote(resources->backend().capabilities().deviceName) + "}";
     if (progress)
       progress->identity(identity);
@@ -859,47 +910,19 @@ int main(int argc, char **argv) {
         decodeWarmupWall{};
     std::array<double, model::ExecutionLimits::maximumBatchWidth>
         decodeWarmupGpu{};
-    std::array<std::vector<double>, model::ExecutionLimits::maximumBatchWidth>
-        decodeSamples;
     std::vector<std::string> performanceFailures;
     for (uint32_t width = 1; width <= decodeWarmupWall.size(); ++width) {
       decodeWarmupWall[width - 1] =
           executor->warmupDecodeBatch(width).wallSeconds * 1000.0;
       decodeWarmupGpu[width - 1] =
           executor->telemetry().lastDecodeGpuSeconds * 1000.0;
-      decodeSamples[width - 1].reserve(samples);
-    }
-    for (uint32_t sample = 0; sample < samples; ++sample) {
-      for (uint32_t offset = 0; offset < decodeWarmupWall.size(); ++offset) {
-        const uint32_t width =
-            1 + (sample + offset) % decodeWarmupWall.size();
-        if (progress)
-          progress->begin("warmup", "decode", sample, 0, width);
-        static_cast<void>(executor->warmupDecodeBatch(width));
-        const double gpuMilliseconds =
-            executor->telemetry().lastDecodeGpuSeconds * 1000.0;
-        decodeSamples[width - 1].push_back(gpuMilliseconds);
-        if (progress) {
-          progress->complete("decode_warmup", "B" + std::to_string(width),
-                             sample, 0, width, 0.0, gpuMilliseconds, 0.0);
-        }
-      }
-    }
-    if (!prefillWarmup.completed)
-      throw std::runtime_error("maximum prefill warmup failed");
-    if (median(decodeSamples[2]) >
-        median(decodeSamples[0]) + median(decodeSamples[1])) {
-      performanceFailures.push_back(
-          "direct B3 decode is slower than separate B1 plus B2 commands");
     }
 
     Events events;
     engine::EngineConfig engineConfig;
-    engineConfig.maxContext = resources->memoryPlan().maximumContextTokens();
+    engineConfig.maxContext = bootstrap->nativeLoop().snapshot().maximumContextTokens;
     engineConfig.vocabularySize = capabilities.vocabularySize;
-    engineConfig.growthPaused = [resources] {
-      return !resources->memoryGovernor().snapshot().hostGrowthAllowed;
-    };
+    engine::connectToGovernor(engineConfig, resources->memoryGovernor());
     engine::Engine engine(engineConfig, resources->cache(),
                                   *executor, events);
     Driver driver(engine, events);
@@ -923,8 +946,7 @@ int main(int argc, char **argv) {
     std::vector<DecodeThroughputMeasurement> decodeThroughput;
     decodeThroughput.reserve(model::ExecutionLimits::maximumBatchWidth * samples);
     uint64_t requestId = 1;
-    if (selected == BenchmarkScenario::All ||
-        selected == BenchmarkScenario::Decode) {
+    if (selected.decode) {
       for (uint32_t sample = 0; sample < samples; ++sample) {
         for (uint32_t offset = 0;
              offset < model::ExecutionLimits::maximumBatchWidth; ++offset) {
@@ -936,25 +958,57 @@ int main(int argc, char **argv) {
               width, sample, decodeThroughputPrompt));
         }
       }
-      if (decodeWallThroughputMedian(decodeThroughput, 3) <=
-          decodeWallThroughputMedian(decodeThroughput, 2)) {
+      // A wider batch must not lose aggregate throughput. A dense model can
+      // fill the GPU by width 3, leaving B3 within B2's noise, so the gate
+      // fails only when every B3 sample falls below every B2 sample; how far
+      // widths scale is for a comparison with a baseline build.
+      const std::vector<double> b2 = decodeWallThroughputs(decodeThroughput, 2);
+      const std::vector<double> b3 = decodeWallThroughputs(decodeThroughput, 3);
+      if (*std::max_element(b3.begin(), b3.end()) <
+          *std::min_element(b2.begin(), b2.end())) {
         performanceFailures.push_back(
-            "B3 aggregate decode throughput did not exceed B2");
+            "B3 aggregate decode throughput fell below B2");
+      }
+      // Nor may a B3 step take longer than a B1 step and a B2 step, which
+      // would decode the three lanes sooner apart. Every width is timed over
+      // its own run of steps here. A warmup command is not comparable across
+      // widths: it follows one setup prefill per lane, so where sustained
+      // load lowers the GPU clock (an M3 Max in Low Power Mode) a wider one
+      // runs at a lower clock.
+      const auto stepGpuMilliseconds = [&](uint32_t width) {
+        std::vector<double> values;
+        for (const DecodeThroughputMeasurement &measurement : decodeThroughput) {
+          if (measurement.width == width)
+            values.push_back(measurement.decodeGpuMilliseconds /
+                             static_cast<double>(measurement.decodeBatches));
+        }
+        return median(std::move(values));
+      };
+      if (stepGpuMilliseconds(3) >
+          stepGpuMilliseconds(1) + stepGpuMilliseconds(2)) {
+        performanceFailures.push_back(
+            "a B3 decode step takes longer than a B1 step and a B2 step");
       }
     }
 
     constexpr std::array<uint32_t, 4> lengths{2048, 10000, 50000, 128000};
+    // The rolling request, a length's longest, appends this many tokens.
+    constexpr uint32_t rollingSuffixTokens = 256;
     std::vector<Measurement> measurements;
-    for (uint32_t length : (selected == BenchmarkScenario::All ||
-                           selected == BenchmarkScenario::Context ||
-                           selected == BenchmarkScenario::Exact)
+    // Lengths the memory plan cannot hold, on a Mac with less memory.
+    std::vector<uint32_t> skippedLengths;
+    for (uint32_t length : selected.context || selected.exact
                                ? std::span<const uint32_t>{lengths}
                                : std::span<const uint32_t>{}) {
-      if (length > engineConfig.maxContext)
-        throw std::runtime_error("benchmark length exceeds runtime capacity");
+      // Every request generates at least one token beyond its prompt.
+      if (length + (selected.exact ? 0 : rollingSuffixTokens) >=
+          engineConfig.maxContext) {
+        skippedLengths.push_back(length);
+        continue;
+      }
       // Repeat short contexts for timing; run the costly 50K/128K cases once.
       const uint32_t lengthSamples =
-          selected != BenchmarkScenario::Exact && length <= 10000 ? samples : 1;
+          !selected.exact && length <= 10000 ? samples : 1;
       for (uint32_t sample = 0; sample < lengthSamples; ++sample) {
         evictAllCache(resources->cache());
         // Every cache prompt ends with the chat-formatted decode prompt so the
@@ -976,12 +1030,14 @@ int main(int argc, char **argv) {
         if (coldResult.cacheStatus != "miss" ||
             exactResult.cacheStatus != "prefix_hit" ||
             exactResult.matchedTokens != expectedBoundary) {
-          throw std::runtime_error("cold/exact cache oracle failed");
+          throw std::runtime_error("cold/exact cache oracle failed: " +
+                                   lookups({coldResult, exactResult},
+                                           expectedBoundary));
         }
         // Cache reuse changes chunking and reduction order. Output agreement
         // is diagnostic; the runtime/Metal oracles validate state and numerics.
         exactResult.coldOutputMatch = coldResult.outputTokens == exactResult.outputTokens;
-        if (selected == BenchmarkScenario::Exact) {
+        if (selected.exact) {
           // Retain one cold seed and every hit, including the first. Repeated
           // long-context restore timing must not require repeated cold prefill.
           for (uint32_t hit = 0; hit < samples; ++hit) {
@@ -991,7 +1047,8 @@ int main(int argc, char **argv) {
             if (exactResult.cacheStatus != "prefix_hit" ||
                 exactResult.matchedTokens != expectedBoundary ||
                 exactResult.targetPrefillRows != length - expectedBoundary)
-              throw std::runtime_error("repeated exact cache oracle failed");
+              throw std::runtime_error("repeated exact cache oracle failed: " +
+                                       lookups({exactResult}, expectedBoundary));
             exactResult.coldOutputMatch = coldResult.outputTokens == exactResult.outputTokens;
             if (exactResult.ttftMilliseconds * 2 >= coldResult.ttftMilliseconds)
               performanceFailures.push_back("repeated exact TTFT did not improve twofold");
@@ -1026,7 +1083,8 @@ int main(int argc, char **argv) {
         }
         std::vector<uint32_t> rolling = cold;
         std::vector<uint32_t> suffix =
-            prompt(256, (uint64_t{length} << 32 | sample) ^ 0xa5a5a5a5ULL);
+            prompt(rollingSuffixTokens,
+                   (uint64_t{length} << 32 | sample) ^ 0xa5a5a5a5ULL);
         rolling.insert(rolling.end(), suffix.begin(), suffix.end());
         Measurement rollingResult =
             runRequest(engine, driver, *executor, events, progress.get(),
@@ -1041,7 +1099,9 @@ int main(int argc, char **argv) {
         if (rollingResult.cacheStatus != "prefix_hit" ||
             rollingCold.cacheStatus != "miss" ||
             rollingResult.matchedTokens != expectedBoundary) {
-          throw std::runtime_error("rolling cache oracle failed");
+          throw std::runtime_error("rolling cache oracle failed: " +
+                                   lookups({rollingResult, rollingCold},
+                                           expectedBoundary));
         }
         rollingResult.coldOutputMatch = rollingResult.outputTokens == rollingCold.outputTokens;
         evictAllCache(resources->cache());
@@ -1058,7 +1118,7 @@ int main(int argc, char **argv) {
         continuationResult.coldOutputMatch =
             continuationResult.outputTokens == continuationCold.outputTokens;
         if (coldResult.draftContextRows != expectedDraftContextRows(
-                length, engineConfig.prefillCheckpointTokens)) {
+                length, engine::kPrefillCheckpointTokens)) {
           throw std::runtime_error(
               "cold prefill performed unnecessary draft-context work");
         }
@@ -1082,8 +1142,7 @@ int main(int argc, char **argv) {
     // A 4K suffix rebuilds the windows required by its recovery boundaries.
     // Compare against the same prompt evaluated cold, then recreate its 10K
     // prefix so the second evaluation is a real partial state-backed hit.
-    if (selected == BenchmarkScenario::All ||
-        selected == BenchmarkScenario::Partial) {
+    if (selected.partial) {
       std::vector<uint32_t> partialBase = prompt(10000, 0x5041525449414cULL);
       std::vector<uint32_t> partialPrompt = partialBase;
       std::vector<uint32_t> partialSuffix = prompt(4096, 0x535546464958ULL);
@@ -1105,7 +1164,7 @@ int main(int argc, char **argv) {
             ((partialBase.size() - 1) / kv::kPageTokens) *
             kv::kPageTokens;
         const uint64_t expectedPartialRows = expectedDraftContextRows(
-            partialPrompt.size(), engineConfig.prefillCheckpointTokens,
+            partialPrompt.size(), engine::kPrefillCheckpointTokens,
             partialBoundary);
         if (partialSeed.cacheStatus != "miss" ||
             partialHit.cacheStatus != "prefix_hit" ||
@@ -1131,42 +1190,105 @@ int main(int argc, char **argv) {
       }
     }
 
-    // State eviction deliberately leaves the Page32 graph intact. The next
-    // request must replay target work and lazily materialize the proven KV
-    // junction; only the following request may restore it directly.
-    if (selected == BenchmarkScenario::All ||
-        selected == BenchmarkScenario::Context) {
+    // Cold prefills whose first chunk holds these rows, around where the
+    // prefill FFN's Neural Engine split starts and where its program's
+    // functions step (ops::AneFfn): a cold prompt prefills up to its replay
+    // point, the last 32-token page boundary before its last token, then the
+    // rest, so a prompt of rows + 1 tokens runs a chunk of those rows and one
+    // of a row. Each prompt is unique and runs on an empty cache.
+    if (selected.shortPrompts) {
+      constexpr std::array<uint32_t, 8> shortRows{480, 512, 544, 640, 672, 1024, 1536, 2016};
+      for (uint32_t sample = 0; sample < samples; ++sample) {
+        for (uint32_t rows : shortRows) {
+          evictAllCache(resources->cache());
+          Measurement result = runRequest(
+              engine, driver, *executor, events, progress.get(), requestId++, "short", sample,
+              prompt(rows + 1, (uint64_t{rows} << 32 | sample) ^ 0x53484f5254ULL));
+          if (result.cacheStatus != "miss")
+            throw std::runtime_error("short prompt of a " + std::to_string(rows) +
+                                     "-row chunk was not a cold miss: " + result.cacheStatus);
+          measurements.push_back(std::move(result));
+        }
+      }
+    }
+
+    // A request lazily materializes a KV junction where its match ends past
+    // its state at a branch point: another branch goes on below and holds a
+    // state there, and the junction lies a draft window or more past the
+    // state the request resumes from. Two prompts share a 7K prefix and then
+    // diverge. State eviction deliberately leaves the Page32 graph intact.
+    if (selected.context) {
       evictAllCache(resources->cache());
-      std::vector<uint32_t> lazyPrompt = prompt(10000, 0x4c415a594b56ULL);
+      const std::vector<uint32_t> lazyShared = prompt(7168, 0x4c415a594b56ULL);
+      const auto lazyBranch = [&](uint64_t salt) {
+        std::vector<uint32_t> branch = lazyShared;
+        const std::vector<uint32_t> tail = prompt(2048, salt);
+        branch.insert(branch.end(), tail.begin(), tail.end());
+        return branch;
+      };
+      const std::vector<uint32_t> lazyPrompt = lazyBranch(0x4c415a5941ULL);
       Measurement lazySeed =
           runRequest(engine, driver, *executor, events, progress.get(),
                      requestId++, "lazy_seed", 0, lazyPrompt);
       evictAllCompositeState(resources->cache());
+      // The repeat's match ends where its own chain does, so it plans no
+      // junction: it replays the prompt and rebuilds its replay point, which
+      // the next repeat restores.
+      Measurement lazyChainEnd =
+          runRequest(engine, driver, *executor, events, progress.get(),
+                     requestId++, "lazy_chain_end", 0, lazyPrompt);
+      Measurement lazyRepeat =
+          runRequest(engine, driver, *executor, events, progress.get(),
+                     requestId++, "lazy_repeat", 0, lazyPrompt);
+      const uint32_t lazyReplayBoundary =
+          ((lazyPrompt.size() - 1) / kv::kPageTokens) * kv::kPageTokens;
+      if (lazySeed.cacheStatus != "miss" ||
+          lazyChainEnd.cacheStatus != "miss" ||
+          lazyChainEnd.junctionMaterializations != 0 ||
+          lazyRepeat.matchedTokens != lazyReplayBoundary ||
+          lazyRepeat.junctionMaterializations != 0) {
+        throw std::runtime_error(
+            "chain-end KV junction oracle failed: junctions=" +
+            std::to_string(lazyChainEnd.junctionMaterializations) + "," +
+            std::to_string(lazyRepeat.junctionMaterializations) + " " +
+            lookups({lazySeed, lazyChainEnd, lazyRepeat}, lazyReplayBoundary));
+      }
+      // The other branch's match ends at the shared prefix, above the first
+      // branch's replay point: it materializes the junction there, and a
+      // third branch off the prefix restores from it.
       Measurement lazyMaterialize =
           runRequest(engine, driver, *executor, events, progress.get(),
-                     requestId++, "lazy_materialize", 0, lazyPrompt);
+                     requestId++, "lazy_materialize", 0,
+                     lazyBranch(0x4c415a5942ULL));
       Measurement lazyReuse =
           runRequest(engine, driver, *executor, events, progress.get(),
-                     requestId++, "lazy_reuse", 0, lazyPrompt);
-      const uint32_t lazyBoundary =
-          ((lazyPrompt.size() - 1) / kv::kPageTokens) *
-          kv::kPageTokens;
-      if (lazySeed.cacheStatus != "miss" ||
-          lazyMaterialize.cacheStatus != "miss" ||
-          lazyMaterialize.matchedTokens != 0 ||
-          lazyMaterialize.junctionMaterializations != 1 ||
-          lazyReuse.matchedTokens != lazyBoundary) {
-        throw std::runtime_error("lazy KV junction oracle failed");
+                     requestId++, "lazy_reuse", 0, lazyBranch(0x4c415a5943ULL));
+      const auto lazyBranchPoint = static_cast<uint32_t>(lazyShared.size());
+      if (lazyMaterialize.junctionMaterializations != 1 ||
+          lazyReuse.matchedTokens != lazyBranchPoint ||
+          lazyReuse.junctionMaterializations != 0) {
+        throw std::runtime_error(
+            "branch KV junction oracle failed: junctions=" +
+            std::to_string(lazyMaterialize.junctionMaterializations) + "," +
+            std::to_string(lazyReuse.junctionMaterializations) + " " +
+            lookups({lazyMaterialize, lazyReuse}, lazyBranchPoint));
       }
-      lazyMaterialize.coldOutputMatch = lazySeed.outputTokens == lazyMaterialize.outputTokens;
-      lazyReuse.coldOutputMatch = lazySeed.outputTokens == lazyReuse.outputTokens;
+      lazyChainEnd.coldOutputMatch = lazySeed.outputTokens == lazyChainEnd.outputTokens;
+      lazyRepeat.coldOutputMatch = lazySeed.outputTokens == lazyRepeat.outputTokens;
       measurements.push_back(std::move(lazySeed));
+      measurements.push_back(std::move(lazyChainEnd));
+      measurements.push_back(std::move(lazyRepeat));
       measurements.push_back(std::move(lazyMaterialize));
       measurements.push_back(std::move(lazyReuse));
     }
 
+    // Shortest form that reads back as the same share.
+    std::array<char, 32> share{};
+    const auto written = std::to_chars(share.data(), share.data() + share.size(), ranAneFfnShare);
     std::cout << "{\"schema_version\":2,\"build_id\":\"" << SPLASH_BUILD_ID
               << "\",\"identity\":" << identity
+              << ",\"ane_ffn_share\":" << std::string_view(share.data(), written.ptr - share.data())
+              << ",\"ane_ffn_minimum_rows\":" << ranAneFfnMinimumRows
               << ",\"geometry\":{\"prefill_rows\":"
               << model::ExecutionLimits::prefillTokenBudget
               << ",\"verify_rows\":" << model::ExecutionLimits::targetVerifyRows
@@ -1188,18 +1310,6 @@ int main(int argc, char **argv) {
       if (index)
         std::cout << ',';
       std::cout << decodeWarmupGpu[index];
-    }
-    std::cout << "],\"decode_gpu_samples_ms\":[";
-    for (size_t width = 0; width < decodeSamples.size(); ++width) {
-      if (width)
-        std::cout << ',';
-      std::cout << '[';
-      for (size_t sample = 0; sample < decodeSamples[width].size(); ++sample) {
-        if (sample)
-          std::cout << ',';
-        std::cout << decodeSamples[width][sample];
-      }
-      std::cout << ']';
     }
     std::cout << "]},\"decode_throughput\":{\"prompt_tokens\":"
               << decodeThroughputPrompt.size()
@@ -1239,7 +1349,19 @@ int main(int argc, char **argv) {
                 << ",\"aggregate_gpu_tokens_per_second\":"
                 << value.aggregateGpuTokensPerSecond << '}';
     }
-    std::cout << "]},\"measurements\":[";
+    // The context the engine served, the automatic one whatever split the
+    // round ran (engine::AneFfnOutcome::context) unless --max-context gave
+    // it, and the one its memory plan holds without the Neural Engine split,
+    // and its elastic state/KV budget and the split's.
+    const engine::EngineMemoryBreakdown &plan = resources->memoryPlan().breakdown();
+    std::cout << "]},\"max_context_tokens\":" << engineConfig.maxContext
+              << ",\"no_ane_context_tokens\":" << resources->aneFfnOutcome().contextWithout
+              << ",\"dynamic_budget_bytes\":" << plan.dynamicBudgetBytes
+              << ",\"ane_ffn_bytes\":" << plan.aneFfnBytes
+              << ",\"skipped_context_lengths\":[";
+    for (size_t index = 0; index < skippedLengths.size(); ++index)
+      std::cout << (index ? "," : "") << skippedLengths[index];
+    std::cout << "],\"measurements\":[";
     for (size_t index = 0; index < measurements.size(); ++index)
       emitMeasurement(measurements[index], index == 0);
     const engine::EngineSnapshot snapshot = engine.snapshot();
@@ -1254,7 +1376,7 @@ int main(int argc, char **argv) {
     std::cout << "],\"final\":{\"cache_hits\":" << snapshot.cacheHits
               << ",\"cold_misses\":" << snapshot.coldMisses
               << ",\"reused_tokens\":" << snapshot.reusedTokens
-              << ",\"kv_blocks\":" << snapshot.resources.kvCache.blocks
+              << ",\"kv_pages_cache\":" << snapshot.resources.pool.pagesPrefix
               << ",\"state_entries\":" << snapshot.resources.stateCache.entries
               << "}}\n";
     if (progress)

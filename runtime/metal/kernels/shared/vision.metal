@@ -1,7 +1,6 @@
 // Vision encoder kernels for the Qwen3.5 vision tower: pixel patchify,
 // position/rope preparation, dense bf16 GEMMs with fused epilogues,
-// LayerNorm, 2D-rope QKV preparation, non-causal flash attention, and the
-// embedding injection into the language model's prefill hidden rows.
+// LayerNorm, 2D-rope QKV preparation and non-causal flash attention.
 //
 // Conventions match the text-model kernels: 256 threads (8 simdgroups) per
 // threadgroup, MPP cooperative-tensor matmuls with fp32 accumulation and
@@ -70,9 +69,9 @@ kernel void vision_patchify(
 }
 
 // Grid-derived inputs: the bilinear (align-corners) resample of the learned
-// 48x48 position table into bf16 position rows, and the 2D rope tables with
-// 18 frequencies each for the row and column coordinate, duplicated across
-// both rotation halves.
+// 48x48 position table into the fp32 residual rows the patch embedding adds
+// to, and the 2D rope tables with 18 frequencies each for the row and column
+// coordinate, duplicated across both rotation halves.
 
 inline void vision_bilinear_taps(uint index, uint size, thread uint *tap,
                                  thread float *weight) {
@@ -89,20 +88,28 @@ inline void vision_bilinear_taps(uint index, uint size, thread uint *tap,
 
 kernel void vision_prepare_positions(
     device const bfloat *table [[buffer(0)]],
-    device bfloat *positions [[buffer(1)]],
+    device float *hidden [[buffer(1)]],
     device float *rope_cos [[buffer(2)]],
     device float *rope_sin [[buffer(3)]],
     constant VisionGridParams &params [[buffer(4)]],
     uint token [[threadgroup_position_in_grid]],
     uint thread_index [[thread_index_in_threadgroup]])
 {
+    device float *out = hidden + ulong(token) * kVisionHidden;
+    // The padding rows of the last GEMM tile start each image from zero: the
+    // residual GEMMs add to these rows in place, and the constructor's memset
+    // clears them only before the first image.
+    if (token >= params.grid_height * params.grid_width) {
+        for (uint dim = thread_index; dim < kVisionHidden; dim += 256)
+            out[dim] = 0.0f;
+        return;
+    }
     uint2 position = vision_patch_position(token, params.grid_width);
     uint row_taps[2], col_taps[2];
     float row_weights[2], col_weights[2];
     vision_bilinear_taps(position.x, params.grid_height, row_taps, row_weights);
     vision_bilinear_taps(position.y, params.grid_width, col_taps, col_weights);
 
-    device bfloat *out = positions + ulong(token) * kVisionHidden;
     for (uint dim = thread_index; dim < kVisionHidden; dim += 256) {
         float blended = 0.0f;
         for (uint h = 0; h < 2; ++h) {
@@ -112,7 +119,7 @@ kernel void vision_prepare_positions(
                                  col_taps[w]) * kVisionHidden + dim]);
             }
         }
-        out[dim] = bfloat(blended);
+        out[dim] = blended;
     }
 
     if (thread_index < kVisionHeadDim) {
@@ -142,13 +149,13 @@ inline float vision_erf(float x) {
 }
 
 template <ushort TileM, ushort TileN, VisionActivation Activation,
-          bool AddResidual>
+          bool AddResidual, typename Output>
 inline void vision_gemm_tile(
     device bfloat *input,
     device bfloat *weights,
     device bfloat *bias,
-    device bfloat *output,
-    device bfloat *residual,
+    device Output *output,
+    device Output *residual,
     uint output_size,
     uint input_size,
     uint output_origin,
@@ -190,7 +197,7 @@ inline void vision_gemm_tile(
     }
 
     auto converted = operation.template get_destination_cooperative_tensor<
-        decltype(a0), decltype(b0), bfloat>();
+        decltype(a0), decltype(b0), Output>();
     #pragma unroll
     for (ushort i = 0; i < accumulated.get_capacity(); ++i) {
         auto index = accumulated.get_multidimensional_index(i);
@@ -210,39 +217,46 @@ inline void vision_gemm_tile(
                 ulong(row_origin + index[1]) * output_size +
                 output_origin + index[0]]);
         }
-        converted[i] = bfloat(value);
+        converted[i] = Output(value);
     }
-    converted.store(c.slice<TileN, TileM>(output_origin, 0));
+    converted.store(c.template slice<TileN, TileM>(output_origin, 0));
 }
 
-#define VISION_GEMM_KERNEL(name, tile_m, tile_n, activation, add_residual)    \
+#define VISION_GEMM_KERNEL(name, tile_m, tile_n, activation, add_residual,    \
+                          output_type)                                       \
 kernel void name(                                                             \
     device bfloat *input [[buffer(0)]],                                       \
     device bfloat *weights [[buffer(1)]],                                     \
     device bfloat *bias [[buffer(2)]],                                        \
-    device bfloat *output [[buffer(3)]],                                      \
-    device bfloat *residual [[buffer(4)]],                                    \
+    device output_type *output [[buffer(3)]],                                 \
+    device output_type *residual [[buffer(4)]],                               \
     constant VisionGemmParams &params [[buffer(5)]],                          \
     uint2 group [[threadgroup_position_in_grid]])                             \
 {                                                                             \
-    vision_gemm_tile<tile_m, tile_n, activation, add_residual>(               \
+    vision_gemm_tile<tile_m, tile_n, activation, add_residual, output_type>(  \
         input, weights, bias, output, residual,                               \
         params.output_size, params.input_size,                                \
         group.y * tile_n, group.x * tile_m);                                  \
 }
 
-VISION_GEMM_KERNEL(vision_gemm_m64n128, 64, 128, VisionNone, false)
-VISION_GEMM_KERNEL(vision_gemm_m64n128_residual, 64, 128, VisionNone, true)
-VISION_GEMM_KERNEL(vision_gemm_m64n128_gelu_tanh, 64, 128, VisionGeluTanh, false)
+VISION_GEMM_KERNEL(vision_gemm_m64n128, 64, 128, VisionNone, false, bfloat)
+// The residual stream, from the positions and patch embedding through the 27
+// blocks, stays fp32: rounded to bf16 at each of its 55 updates, it carried
+// most of the tower's drift from the fp32 reference.
+VISION_GEMM_KERNEL(vision_gemm_m64n128_residual, 64, 128, VisionNone, true,
+                   float)
+VISION_GEMM_KERNEL(vision_gemm_m64n128_gelu_tanh, 64, 128, VisionGeluTanh, false,
+                   bfloat)
 // The merger's 256-divisible output sizes use the wider tile.
-VISION_GEMM_KERNEL(vision_gemm_m32n256, 32, 256, VisionNone, false)
+VISION_GEMM_KERNEL(vision_gemm_m32n256, 32, 256, VisionNone, false, bfloat)
 VISION_GEMM_KERNEL(vision_gemm_m32n256_gelu_erf, 32, 256, VisionGeluErf,
-                   false)
+                   false, bfloat)
 
-// LayerNorm with bias (fp32 statistics), one threadgroup per row.
+// LayerNorm with bias of an fp32 residual row (fp32 statistics), one
+// threadgroup per row.
 
 kernel void vision_layer_norm(
-    device const bfloat *input [[buffer(0)]],
+    device const float *input [[buffer(0)]],
     device const bfloat *weight [[buffer(1)]],
     device const bfloat *bias [[buffer(2)]],
     device bfloat *output [[buffer(3)]],
@@ -253,12 +267,12 @@ kernel void vision_layer_norm(
     uint simd_group [[simdgroup_index_in_threadgroup]])
 {
     threadgroup float reductions[8];
-    device const bfloat *row = input + ulong(group) * params.width;
+    device const float *row = input + ulong(group) * params.width;
     device bfloat *out = output + ulong(group) * params.width;
 
     float sum = 0.0f;
     for (uint column = thread_index; column < params.width; column += 256) {
-        sum += float(row[column]);
+        sum += row[column];
     }
     sum = simd_sum(sum);
     if (simd_lane == 0) reductions[simd_group] = sum;
@@ -271,7 +285,7 @@ kernel void vision_layer_norm(
 
     float squares = 0.0f;
     for (uint column = thread_index; column < params.width; column += 256) {
-        float centered = float(row[column]) - mean;
+        float centered = row[column] - mean;
         squares += centered * centered;
     }
     squares = simd_sum(squares);
@@ -281,10 +295,10 @@ kernel void vision_layer_norm(
     #pragma unroll
     for (ushort i = 0; i < 8; ++i) variance += reductions[i];
     variance /= float(params.width);
-    float inverse = rsqrt(variance + 1e-6f);
+    float inverse = rsqrt(variance + SPLASH_VISION_NORM_EPSILON);
 
     for (uint column = thread_index; column < params.width; column += 256) {
-        float normalized = (float(row[column]) - mean) * inverse;
+        float normalized = (row[column] - mean) * inverse;
         out[column] = bfloat(normalized * float(weight[column]) +
                              float(bias[column]));
     }
@@ -493,7 +507,7 @@ kernel void vision_attention(
 
 // Gather padded attention output back to (tokens, 1152) rows.
 
-kernel void vision_attention_pack(
+kernel void vision_attention_gather(
     device const bfloat *padded [[buffer(0)]],
     device bfloat *output [[buffer(1)]],
     constant VisionQkvParams &params [[buffer(2)]],
@@ -507,25 +521,5 @@ kernel void vision_attention_pack(
         row[index] = padded[
             (ulong(head) * params.padded_tokens + token) * kVisionHeadDim +
             dim];
-    }
-}
-
-// Overwrites language-model embedding rows with encoded image rows. Encoded
-// after the token-embedding gather on the same serial compute encoder, so
-// layer 0 sees the injected rows.
-
-kernel void vision_inject_embeddings(
-    device const bfloat *source [[buffer(0)]],
-    device bfloat *output [[buffer(1)]],
-    constant VisionInjectParams &params [[buffer(2)]],
-    uint index [[thread_position_in_grid]],
-    uint grid_size [[threads_per_grid]])
-{
-    uint elements = params.rows * params.width;
-    for (uint element = index; element < elements; element += grid_size) {
-        uint row = element / params.width;
-        uint dim = element % params.width;
-        output[ulong(params.destination_row + row) * params.width + dim] =
-            source[ulong(params.source_row + row) * params.width + dim];
     }
 }

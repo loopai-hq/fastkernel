@@ -1,4 +1,3 @@
-// Modified by meowkernels.
 #pragma once
 
 // Parameter layouts shared by host dispatch code and Metal kernels.
@@ -8,38 +7,45 @@
 #include <stdint.h>
 #endif
 
+// Affine (MLX) Q4 and Q8 projections store each of their weight, scale and
+// bias planes in tiles of this many output rows, [N / T][K / 64][T], every
+// row of a tile holding its quant group's values. The routing kernels read an
+// affine router as one tile of expert slots (SPLASH_MOE_EXPERT_SLOTS).
+#define SPLASH_AFFINE_TILE_ROWS 256u
+
+// A Q4 projection's matrix, for prefill and the decode tiles whose grid
+// covers it (a K-split tile reads its split count from the grid). Separate
+// from ops::LinearMatrix so host-only fields cannot change the ABI.
 struct Q4Params {
   uint32_t output_size;
   uint32_t input_size;
-  uint32_t persistent_groups;
 };
 
-static_assert(sizeof(Q4Params) == 12,
-              "Q4 decode projection parameters are 12 bytes on both sides");
+static_assert(sizeof(Q4Params) == 8,
+              "Q4 projection parameters are 8 bytes on both sides");
 
-// Layer slots of the grouped context K/V kernels (linear_q4_context_kv.metal, which static_asserts it against its
-// argument list); Q4Linear admits at most this many drafter layers.
-#define SPLASH_CONTEXT_KV_MAX_LAYERS 7u
+// The prefill residual kernels over a view of the leading inputs of wider
+// weight rows (prefill_linear_q4_*_leading_inputs): each row of the weight,
+// scale and bias planes holds plane_input_size inputs, of which the
+// projection reads the first matrix.input_size.
+struct Q4PrefillLeadingParams {
+  Q4Params matrix;
+  uint32_t plane_input_size;
+};
 
-// The grouped drafter context K/V projection (linear_q4_context_kv.metal): the full projection's Q4Params, then
-// layers x kv_tiles groups, one 128-column tile each, from tile kv_first_tile of each layer's qkv output.
-struct Q4ContextKvParams {
+static_assert(sizeof(Q4PrefillLeadingParams) == 12,
+              "Q4 leading-input prefill parameters are 12 bytes on both sides");
+
+// The persistent decode tiles' matrix and their grid's `groups`
+// threadgroups, which stride over the column tiles. The stride is a
+// parameter rather than [[threadgroups_per_grid]]: compiled at -O3, a loop
+// striding by that attribute ran nondeterministically under Metal shader
+// validation, which the kernel tests run with.
+struct Q4PersistentParams {
   uint32_t output_size;
   uint32_t input_size;
-  uint32_t persistent_groups;  // output_size / 128: the full projection's one-tile-per-group grid
-  uint32_t layers;
-  uint32_t kv_first_tile;
-  uint32_t kv_tiles;
+  uint32_t groups;
 };
 
-static_assert(sizeof(Q4ContextKvParams) == 24,
-              "Q4 context K/V parameters are 24 bytes on both sides");
-
-// Separate from ops::LinearMatrix so host-only fields cannot change the ABI.
-struct Q4PrefillParams {
-  uint32_t output_size;
-  uint32_t input_size;
-};
-
-static_assert(sizeof(Q4PrefillParams) == 8,
-              "Q4 prefill projection parameters are 8 bytes on both sides");
+static_assert(sizeof(Q4PersistentParams) == 12,
+              "Q4 persistent decode parameters are 12 bytes on both sides");

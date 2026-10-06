@@ -13,16 +13,122 @@ We measured every number here on our own Macs. The tests use Qwen3.8-27B (4-bit)
 | Context | The most text the model can hold at once: your prompt plus its answer. |
 
 Most M5 Max tests use the same 6 prompts. They cover chat, math, code, a code file, a long agent task and Portuguese.
-Some tables call the Portuguese prompt "multilingual". Each test's fine print, such as seeds and builds, is in its
-"Details" fold. A 95% confidence interval, written [low, high], is the range the true average falls in, with 95%
-confidence.
+Some tables call the Portuguese prompt "multilingual". The Splash 1.3.0 tests add 4 more chat prompts and 2
+long-context prompts, 12 in all. Each test's fine print, such as seeds and builds, is in its "Details" fold. A 95%
+confidence interval, written [low, high], is the range the true average falls in, with 95% confidence.
 
 ## M5 Max (40-core GPU, 128 GB)
 
+### Sampled answers: fastkernel 1.1.0 vs Splash 1.3.0 and fastkernel 1.0.0, 12 prompts
+
+fastkernel 1.1.0 is this release, built on Splash 1.3.0. All three servers ran at the same time, taking turns on each
+prompt.
+
+| Engine | tok/s | |
+|---|---:|---|
+| **fastkernel 1.1.0** | **99.2** | |
+| fastkernel 1.0.0 | 100.8 | same speed: 0.98× (95% range 0.96–1.00×) |
+| Splash 1.3.0 | 89.0 | fastkernel 1.1.0 is **1.11× faster** (95% range 1.07–1.14×) |
+
+| | fastkernel 1.1.0 | fastkernel 1.0.0 | Splash 1.3.0 |
+|---|---:|---:|---:|
+| Chat (5 prompts), tok/s | **76.7** | 79.0 | 68.5 |
+
+Time to first token, for each prompt's first request in the run (nothing cached), in seconds:
+
+| Prompt | fastkernel 1.1.0 | fastkernel 1.0.0 | Splash 1.3.0 |
+|---|---:|---:|---:|
+| code file, 2,247 tokens | 3.1 | 3.2 | 2.7 |
+| long context 2, 4,702 tokens | 6.3 | 6.5 | 5.4 |
+| long context 1, 6,645 tokens | 8.5 | 8.8 | 7.7 |
+| agent, 32,678 tokens | 45.8 | 46.3 | 40.1 |
+| code file again (second request, prompt cache) | 0.1 | 0.4 | 0.1 |
+
+Each prompt runs twice, and the second request can reuse the first one's prompt cache, so the first four rows take
+the first request of each prompt, and the last row the code file's second request.
+
+Conditions: 2026-10-07, 03:39–04:01 IST, on AC power, Chrome open.
+
+<details>
+<summary>Details</summary>
+
+- Settings: temperature 1, top-p 0.95, top-k 20, up to 1,024 tokens, reasoning effort medium, seeds 20261501 and
+  20261502. The engines took turns on each prompt, and the client timed each answer.
+- tok/s is the mean over prompts of each prompt's mean. A ratio is the geometric mean of the per-prompt ratios, and
+  its 95% range is a bootstrap over prompts. In chat, fastkernel 1.1.0 is 1.12× Splash 1.3.0
+  and 0.97× fastkernel 1.0.0.
+- fastkernel 1.1.0: a release-candidate build with the same GPU kernels as the release, with the official `incoai/Qwen3.8-27B-Splash` package and the Quick
+  start flags (`SPLASH_DRAFT_HEAD_IDS`). Neural Engine prefill was on, its default; its startup timing on this Mac kept prefill on the GPU alone, where no split was faster.
+- fastkernel 1.0.0: the release package with the same model and flags.
+- Splash 1.3.0: the release package, running `mlx-community/Qwen3.8-27B-4bit` (revision 3e6447f) with its DFlash 2
+  draft, the same weights as the Splash package. Its defaults stayed on, including the Neural Engine prefill split and
+  int8 K/V.
+- Each server had a 40K-token context and a 40 GB memory limit.
+
+Per prompt, in tok/s:
+
+| Prompt | fastkernel 1.1.0 | fastkernel 1.0.0 | Splash 1.3.0 |
+|---|---:|---:|---:|
+| chat 1 | 74.7 | 78.6 | 65.1 |
+| chat 2 | 75.6 | 74.8 | 65.8 |
+| chat 3 | 77.0 | 81.6 | 68.4 |
+| chat 4 | 77.3 | 78.8 | 70.1 |
+| chat 5 | 78.8 | 81.4 | 73.2 |
+| math | 166.4 | 164.9 | 145.9 |
+| code | 153.9 | 150.0 | 127.5 |
+| code file | 125.4 | 133.5 | 115.6 |
+| agent (32K prompt) | 81.5 | 87.6 | 85.1 |
+| multilingual | 92.7 | 90.4 | 82.9 |
+| long context 1 | 88.9 | 88.4 | 82.4 |
+| long context 2 | 97.7 | 99.7 | 86.0 |
+
+</details>
+
+### Sampled answers: fastkernel 1.0.0 vs Splash 1.3.0, 12 prompts
+
+The same 12 prompts and settings, with the fastkernel 1.0.0 release package against Splash 1.3.0.
+
+| Engine | tok/s | |
+|---|---:|---|
+| **fastkernel 1.0.0** | **92.5** | |
+| Splash 1.3.0 | 82.6 | fastkernel 1.0.0 is **1.12× faster** (95% range 1.09–1.15×) |
+
+In chat (5 prompts), fastkernel 1.0.0 writes 72.3 tok/s against 62.9, 1.15× faster. On the 6 prompts of the tests
+below, it writes 109.4 against 97.8.
+
+Conditions: 2026-10-06, 21:24–21:35 IST, on AC power, Chrome and other apps open.
+
+<details>
+<summary>Details</summary>
+
+- Settings and the Splash 1.3.0 setup are as in the test above. Both servers ran at the same time, taking turns on
+  each prompt.
+
+Per prompt, in tok/s:
+
+| Prompt | fastkernel 1.0.0 | Splash 1.3.0 |
+|---|---:|---:|
+| chat 1 | 76.7 | 61.8 |
+| chat 2 | 69.0 | 60.4 |
+| chat 3 | 72.1 | 62.4 |
+| chat 4 | 70.1 | 63.3 |
+| chat 5 | 73.8 | 66.6 |
+| math | 153.4 | 138.4 |
+| code | 138.9 | 120.0 |
+| code file | 122.5 | 108.6 |
+| agent (32K prompt) | 80.6 | 79.4 |
+| multilingual | 84.0 | 78.4 |
+| long context 1 | 79.3 | 74.6 |
+| long context 2 | 90.2 | 77.7 |
+
+</details>
+
+The tests below ran fastkernel 1.0.0 and its pre-release builds, 2026-09-26 to 2026-09-30.
+
 ### Sampled answers vs Splash 1.1.0, 6 prompts
 
-Splash 1.1.0 is the latest Splash. Both servers ran at the same time, taking turns on each prompt, with other apps and
-servers closed. fastkernel is the released 1.0.0 package.
+Splash 1.1.0 was the latest Splash on 2026-09-30, the day of this test. Both servers ran at the same time, taking turns
+on each prompt, with other apps and servers closed. fastkernel is the released 1.0.0 package.
 
 | Engine | tok/s | |
 |---|---:|---|
@@ -60,7 +166,7 @@ Conditions: nothing else used the GPU during the run.
 - Seeds 20261501 and 20261502. A seed fixes the random picks, so a run can be repeated.
 - The engines took turns on each prompt. The client (the program sending the prompts) timed each answer, and we
   averaged over all requests.
-- Builds: fastkernel development build stack28; Splash 1.0.2 as installed; MTPLX from a local install (Bare-Speed
+- Builds: a fastkernel 1.0.0 pre-release build of 2026-09-27; Splash 1.0.2 as installed; MTPLX from a local install (Bare-Speed
   4-bit + MTP). This run didn't record the thermal state or whether Chrome was open.
 
 Per prompt, in tok/s:
@@ -117,7 +223,7 @@ Conditions: nothing else used the GPU during the run.
   4-bit number format.
 - AX flags: `--mlx-mtp-policy required --speculation-profile coding`. AX's own guessing was on, and it kept 92% of its
   guesses.
-- fastkernel: development build stack7. With the long agent task included, fastkernel's greedy average is 120.8.
+- fastkernel: a 1.0.0 pre-release build of 2026-09-26. With the long agent task included, fastkernel's greedy average is 120.8.
 - AX's answers are shorter and show no written-out reasoning. That changes how long an answer is, not how fast it is
   written.
 
@@ -186,7 +292,7 @@ Results:
   [3.01, 4.47].
 - Conditions: the Mac was cool ("nominal") for the first 4 requests, then warm ("fair") for 32 of 36. Chrome was open
   for 16 of 36 requests.
-- fastkernel: development build stack51 with the release settings (build `src-aeef908a…`).
+- fastkernel: the 1.0.0 pre-release build of 2026-09-29, with the release settings.
 
 Per prompt, in tok/s:
 
@@ -236,7 +342,7 @@ Per prompt, in tok/s:
 | agent | 89 | 70 | 99 | 78 |
 | multilingual | 94 | 67 | 100 | 70 |
 
-- Builds: fastkernel stack51 (build ID `src-aeef908a…`); Splash 1.0.2 as installed (`src-4023cf43…`). Both servers
+- Builds: the fastkernel 1.0.0 pre-release build of 2026-09-29; Splash 1.0.2 as installed. Both servers
   ran in one session, and all 48 requests completed cleanly.
 - In all 12 sampled requests, Splash wrote the same number of tokens as in the first run. So it did the same work
   both times (86.6 vs 86.9 tok/s).
@@ -261,7 +367,7 @@ Conditions: Chrome was open. The Mac was cool for 30 requests and warm ("fair") 
 <summary>Details</summary>
 
 - Model: `incoai/Qwen3.6-35B-A3B-Splash` (4-bit mixture of experts) with its DFlash 2 draft model.
-- fastkernel: development build stack51 with the release settings (build `src-aeef908a…`).
+- fastkernel: the 1.0.0 pre-release build of 2026-09-29, with the release settings.
 - In this build, the draft's one-launch K/V math (part 3 of [What's inside](WHATS-INSIDE.md)) covered the 27B's layer
   shapes. On this model it used the regular path, which is also exact. K/V are the keys and values the model stores
   for each earlier token.
@@ -346,7 +452,7 @@ Conditions: on power, with Chrome, Safari and ChatGPT quit. The Mac stayed cool 
 - Tool calls, end to end including the prompt: tool-copy 115.3 tok/s, tool-edit 75.5.
 - Exact on the real chip: 2,058/2,058 positions match with and without the multi-row checks. The M5 Pro also matched
   our M5 Max running as if it had 16 GPU cores, position for position.
-- Build: a development build with the same memory plan. Its single-request paths match the release on 16 cores.
+- Build: a fastkernel 1.0.0 pre-release build with the same memory plan. Its single-request paths match the release on 16 cores.
 - The small draft head didn't fit this memory plan, so fastkernel used the full one.
 - A separate run with the Mac in normal use (Chrome open, CPU load up to 4.6): 56.6 tok/s sampled, 50.2 greedy.
 
@@ -372,6 +478,10 @@ The small draft model only guesses. The full model checks every token before it 
   differ from Splash. That code passed long-document retrieval tests from 2K to 128K tokens, and quality checks.
 - Every speed change after that gives byte-for-byte the same numbers as the code it replaced. This holds even when
   many guesses are checked at once.
+- Neural Engine prefill is on by default since 1.1.0, as in Splash 1.3.0. At startup the engine times the GPU
+  against a GPU and Neural Engine split, and uses the split only where it is faster. The split reads long Qwen3.8-27B
+  prompts with part of each layer's FFN in 8-bit on the Neural Engine. Writing the answer stays on the GPU.
+  `SPLASH_ANE=0` runs prefill on the GPU alone.
 
 <details>
 <summary>Check it yourself</summary>

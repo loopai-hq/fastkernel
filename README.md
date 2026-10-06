@@ -2,41 +2,47 @@
 <h1 align="center">fastkernel</h1>
 
 <p align="center"><b>The fastest inference engine for Qwen3.8-27B and Qwen3.6-35B-A3B on Apple Silicon.</b><br>
-1.31× faster than Splash 1.1.0 on an M5 Max · every token still checked by the full model</p>
-
-<p align="center"><a href="docs/media/speed-race.mp4"><img src="docs/media/speed-race.webp" width="720" alt="fastkernel, Splash 1.1.0 and MLX-LM write the same 708-token todo app side by side on an M5 Max. fastkernel finishes in 3.97 s, Splash in 5.31 s, MLX-LM in 24.9 s."></a><br>
-<sub><b>Same prompt, same 708-token answer:</b> fastkernel 3.97 s · Splash 1.1.0 5.31 s · MLX-LM 24.9 s.
-<a href="docs/media/speed-race.mp4">Video</a></sub></p>
-
-<p align="center"><a href="docs/media/galaxy-app.mp4"><img src="docs/media/galaxy-app.webp" width="720" alt="fastkernel and Splash 1.1.0 write a particle-galaxy app side by side on an M5 Max. fastkernel writes the 3,044 tokens in 19.6 s, Splash takes 29.7 s for the same number of tokens. Then fastkernel's galaxy runs in Chrome."></a><br>
-<sub><b>Building a particle galaxy app in one shot:</b> 3,044 tokens in 19.6 s for fastkernel vs 29.7 s for Splash
-1.1.0, then the galaxy fastkernel wrote runs in Chrome. <a href="docs/media/galaxy-app.mp4">Video</a></sub></p>
-
-<p align="center"><a href="docs/media/code-edit.mp4"><img src="docs/media/code-edit.webp" width="720" alt="fastkernel, Splash 1.1.0 and MLX-LM edit the same pasted 210-line Python file. fastkernel finishes in 7.2 s, Splash in 13.4 s, MLX-LM in 65.5 s."></a><br>
-<sub><b>Editing a pasted 210-line file:</b> fastkernel 7.2 s · Splash 1.1.0 13.4 s · MLX-LM 65.5 s.
-<a href="docs/media/code-edit.mp4">Video</a></sub></p>
-
-<p align="center"><sub>Qwen3.8-27B 4-bit on an M5 Max, one engine's server per pane. Real-time replays of measured token timings.</sub></p>
+1.11× faster than Splash 1.3.0 on an M5 Max · every token still checked by the full model</p>
 
 > **Jump to:** [How fast?](#m5-max-128-gb) · [Requirements](#requirements) · [Quick start](#quick-start) ·
-> [What's different](#whats-different-from-splash) · [All the numbers](docs/BENCHMARKS.md)
+> [What's different](#whats-different-from-splash) · [Switches](docs/SWITCHES.md) · [All the numbers](docs/BENCHMARKS.md)
 
 fastkernel runs the Qwen3.8-27B and Qwen3.6-35B-A3B AI models on your own Mac. Chat with them in your browser, or
 connect a coding agent or any other app.
 
-On an M5 Max it writes 123 tok/s (tokens per second). A token is a word or part of a word. Side by side with
-Splash 1.1.0, the latest Splash, it's 1.31× faster. A small draft model guesses ahead, and the full model checks every
-token before it keeps it.
+fastkernel 1.1.0 is built on Splash 1.3.0, the latest Splash. On an M5 Max it writes answers 1.11×
+faster than Splash 1.3.0 and matches fastkernel 1.0.0's decode speed. Compared with fastkernel 1.0.0, it reuses its prompt cache better.  It brings
+everything new in Splash 1.3.0. A small draft model guesses ahead, and the full model checks every token before it
+keeps it.
 
 ## M5 Max (128 GB)
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/engines-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="docs/images/engines-light.png">
-  <img alt="fastkernel is faster than every engine we benchmarked. Client decode tok/s on an M5 Max 128 GB, Qwen3.8-27B 4-bit; each pair ran in one session. Splash 1.0.2 (stock), 2026-09-27: sampled, fastkernel 123.5 vs 86.9, fastkernel 1.42× faster. MTPLX (Bare-Speed 4-bit + MTP depth 3), 2026-09-27: sampled, fastkernel 123.5 vs 64.0, fastkernel 1.93× faster. AX Engine 7.5.7 (MXFP4 + MTP · same 5 prompts), 2026-09-26: greedy, fastkernel 126.0 vs 40.5, fastkernel 3.11× faster. MLX-LM 0.31.3 (4-bit), 2026-09-29: sampled, fastkernel 116.8 vs 31.2, fastkernel 3.74× faster. llama.cpp 0.5.0 (Q4_K_M GGUF), 2026-09-29: sampled, fastkernel 116.8 vs 27.0, fastkernel 4.33× faster." width="760" src="docs/images/engines-light.png">
-</picture>
+fastkernel 1.1.0, side by side with Splash 1.3.0 and fastkernel 1.0.0 (2026-10-07):
 
-| Engine | Its speed | fastkernel's speed | fastkernel is |
+| Engine | Its speed | fastkernel 1.1.0's speed | fastkernel 1.1.0 is |
+|---|---:|---:|---|
+| Splash 1.3.0 | 89.0 | 99.2 | **1.11× faster** |
+| fastkernel 1.0.0 | 100.8 | 99.2 | **same speed** (0.98×) |
+
+Speeds are in tok/s (tokens per second). A token is a word or part of a word. All three servers ran in one session,
+taking turns on the same 12 prompts: chat, math, code, a code file, a 32K-token agent task, a multilingual prompt and
+two long-context prompts. In chat, fastkernel 1.1.0 writes 76.7 tok/s, 1.12×
+Splash 1.3.0's 68.5.
+
+**Time to first token**, for a new prompt with nothing cached:
+
+| Prompt | fastkernel 1.1.0 | fastkernel 1.0.0 |
+|---|---:|---:|
+| 2,247 tokens | 3.1 s | 3.2 s |
+| 4,702 tokens | 6.3 s | 6.5 s |
+| 6,645 tokens | 8.5 s | 8.8 s |
+| 32,678 tokens | 45.8 s | 46.3 s |
+
+Sent again, the 2,247-token prompt starts in 0.1 s on fastkernel 1.1.0, against 0.4 s on 1.0.0: 1.1.0 reuses its prompt cache better.
+
+**fastkernel 1.0.0 vs other engines**
+
+| Engine | Its speed | fastkernel 1.0.0's speed | fastkernel 1.0.0 is |
 |---|---:|---:|---|
 | Splash 1.1.0 | 93.8 | 123.2 | **1.31× faster** |
 | MTPLX | 64.0 | 123.5 | **1.93× faster** |
@@ -44,31 +50,21 @@ token before it keeps it.
 | MLX-LM | 31.2 | 116.8 | **3.74× faster** |
 | llama.cpp | 27.0 | 116.8 | **4.33× faster** |
 
-Speeds are in tok/s. Each pair ran in one session, on the same prompts.
+Speeds are in tok/s, measured 2026-09-26 to 2026-09-30. Each pair ran in one session, on the same prompts.
 
 **Also: Qwen3.6-35B-A3B (MoE)**
 
 MoE means "mixture of experts". The model has many small expert blocks and uses only a few of them for each token.
 That makes it fast for its size.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/moe-35b-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="docs/images/moe-35b-light.png">
-  <img alt="fastkernel is faster than stock Splash on Qwen3.6-35B-A3B. Client decode tok/s on an M5 Max 128 GB, Qwen3.6-35B-A3B 4-bit; each pair ran in one session. Splash 1.0.2 (stock), 2026-09-29: sampled, fastkernel 271.5 vs 218.9, fastkernel 1.24× faster; greedy, fastkernel 271.2 vs 249.8, fastkernel 1.09× faster." width="760" src="docs/images/moe-35b-light.png">
-</picture>
-
-Here fastkernel is **1.24× faster** than Splash 1.0.2: 271.5 vs 218.9 tok/s.
+On Qwen3.6-35B-A3B, fastkernel 1.0.0 is **1.24× faster** than Splash 1.0.2: 271.5 vs 218.9 tok/s, sampled
+(2026-09-29).
 
 ## M5 Pro (24 GB)
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/engines-m5pro-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="docs/images/engines-m5pro-light.png">
-  <img alt="fastkernel runs a 69K-token context on a 24 GB M5 Pro. fastkernel on an M5 Pro with 24 GB and a 16-core GPU, Qwen3.8-27B 4-bit text-only, 69,625-token context with iogpu.wired_limit_mb=20480; server-side decode tok/s, greedy, one request per task: code edit 121.3, math 78.9, coding 73.3, 32K coding-agent task 43.0, chat 39.2." width="760" src="docs/images/engines-m5pro-light.png">
-</picture>
-
 The context is how much text the model can hold at once: your prompt plus its answer. With one memory setting (see
-Quick start), a 24 GB M5 Pro holds a 69K context and writes (greedy answers, one request per task):
+Quick start), a 24 GB M5 Pro running fastkernel 1.0.0 holds a 69K context and writes (greedy answers, one request per
+task):
 
 | Task | tok/s |
 |---|---:|
@@ -83,7 +79,7 @@ The code edit is fastest because its answer repeats text from the prompt.
 At default settings, the same Mac holds an 8K context. It writes 77.6 tok/s on a math question, 72.0 on a coding
 question and 38.5 in chat.
 
-**Base M5 (10-core GPU, 32 GB):** fastkernel is 2–5% faster than Splash 1.1.0 in two runs on the same prompts
+**Base M5 (10-core GPU, 32 GB):** fastkernel 1.0.0 is 2–5% faster than Splash 1.1.0 in two runs on the same prompts
 (35.3 vs 33.5 tok/s in the second).
 
 Full numbers and how we measured: [docs/BENCHMARKS.md](docs/BENCHMARKS.md)
@@ -111,11 +107,11 @@ For Qwen3.6-35B-A3B, use `incoai/Qwen3.6-35B-A3B-Splash` instead of `incoai/Qwen
 
 ### Prebuilt download (no Xcode)
 
-Download `fastkernel-1.0.0-macos-arm64.tar.gz` from
-[Releases](https://github.com/abhishekgahlot2/fastkernel/releases). Then unpack it and start the server:
+Download `fastkernel-1.1.0-macos-arm64.tar.gz` from
+[Releases](https://github.com/loopai-hq/fastkernel/releases). Then unpack it and start the server:
 
 ```bash
-tar -xzf fastkernel-1.0.0-macos-arm64.tar.gz && cd fastkernel
+tar -xzf fastkernel-1.1.0-macos-arm64.tar.gz && cd fastkernel
 SPLASH_DRAFT_HEAD_IDS=$PWD/data/head-ranked.u32 ./splash serve --model incoai/Qwen3.8-27B-Splash
 ```
 
@@ -127,7 +123,7 @@ The first run also sets up its Python packages, which takes 20 seconds.
 ### Build from source
 
 ```bash
-git clone https://github.com/abhishekgahlot2/fastkernel && cd fastkernel
+git clone https://github.com/loopai-hq/fastkernel && cd fastkernel
 make install MODEL=incoai/Qwen3.8-27B-Splash
 SPLASH_DRAFT_HEAD_IDS=$PWD/data/head-ranked.u32 ./splash serve --model incoai/Qwen3.8-27B-Splash
 ```
@@ -157,21 +153,19 @@ cp -R .claude/skills/fastkernel ~/.agents/skills/    # Codex
 
 ## What's different from Splash
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/faster-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="docs/images/faster-light.png">
-  <img alt="What's different from Splash: checks more guesses at once; guesses from your prompt (editing a pasted file takes 7.2 s with fastkernel vs 13.4 s with Splash 1.1.0 on an M5 Max); faster GPU code for the model's math; runs on 24 GB Macs (69K-token context). 1.31× faster than Splash 1.1.0 on an M5 Max (123.2 vs 93.8 tok/s)." width="760" src="docs/images/faster-light.png">
-</picture>
-
+- **Built on Splash 1.3.0.** fastkernel 1.1.0 brings fastkernel's speedups onto the latest Splash, with its prompt
+  reading and prompt cache: a repeated prompt starts in 0.1 s.
 - **Same model, same checking.** A small draft model guesses the next few tokens. The full model checks every guess
   and keeps only the ones it agrees with.
 - **Guesses from your prompt.** Some answers repeat your input, like an edit to a file you pasted. There the engine
   takes its guesses straight from your prompt. The full model can then keep many tokens in one step.
 - **Faster GPU code.** New GPU code, hand-tuned for Apple silicon, does the model's math in less time.
-- **Runs on 24 GB Macs.** Text-only mode fits the model and a 69K context in 24 GB.
-- **New engine code.** Over 6,000 new lines of C++ and Metal, Apple's GPU language. They include 32 new GPU
-  kernels, small programs that run on the GPU. What each part does and what it gained:
-  [docs/WHATS-INSIDE.md](docs/WHATS-INSIDE.md).
+- **Runs on 24 GB Macs.** Text-only mode skips the image weights. On a 24 GB M5 Pro, fastkernel 1.0.0 fit the model
+  and a 69K context.
+- **New engine code.** 5,314 new lines of C++ and Metal, Apple's GPU language, on top of Splash 1.3.0.
+  They include 34 new GPU kernels, small programs that run on the GPU. What each part does and
+  what it gained: [docs/WHATS-INSIDE.md](docs/WHATS-INSIDE.md). Every change has a switch:
+  [docs/SWITCHES.md](docs/SWITCHES.md).
 
 ## Credits & license
 
@@ -179,5 +173,6 @@ fastkernel is licensed under the Apache License 2.0 ([LICENSE](LICENSE), [NOTICE
 the NOTICE file and credit fastkernel.
 
 Thank you to [Inco AI](https://github.com/incoai) for [Splash](https://github.com/incoai/splash), the Apache-2.0 engine
-fastkernel is built on. Splash's own README: [docs/SPLASH-README.md](docs/SPLASH-README.md). Each file we changed
-from Splash says "Modified by meowkernels."
+fastkernel is built on. fastkernel 1.1.0 is built on Splash 1.3.0. Splash's own README:
+[docs/SPLASH-README.md](docs/SPLASH-README.md). Third-party code that Splash ships keeps its own license:
+[THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES). Each file we changed from Splash says "Modified by meowkernels."

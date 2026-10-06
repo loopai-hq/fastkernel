@@ -10,80 +10,95 @@
 #include <stdint.h>
 #endif
 
+// The draft attention the kernels are compiled for, the only one
+// ops::DraftAttention accepts: 32 query heads over 8 KV heads of 128
+// dimensions, so a q|k|v row holds 6144 values and an attention row 4096.
+// The attention core runs a KV head's four query heads over the eight query
+// rows together, as 32 attention rows.
+#define SPLASH_DRAFT_QUERY_HEADS 32u
+#define SPLASH_DRAFT_KV_HEADS 8u
+#define SPLASH_DRAFT_HEAD_DIMENSION 128u
+#define SPLASH_DRAFT_ATTENTION_WIDTH                                           \
+  (SPLASH_DRAFT_QUERY_HEADS * SPLASH_DRAFT_HEAD_DIMENSION)
+#define SPLASH_DRAFT_QKV_WIDTH                                                 \
+  (SPLASH_DRAFT_ATTENTION_WIDTH +                                              \
+   2u * SPLASH_DRAFT_KV_HEADS * SPLASH_DRAFT_HEAD_DIMENSION)
+#define SPLASH_DRAFT_ATTENTION_ROWS                                            \
+  (SPLASH_DRAFT_QUERY_HEADS / SPLASH_DRAFT_KV_HEADS * SPLASH_DRAFT_QUERY_ROWS)
+
+// The dynamic convolutions of a draft layer (draft_conv), each run in two
+// stages, before its attention or MLP and after it with the residual: a
+// stage weighs a channel's row and the row before it, its two taps, each by
+// a base weight plus the dynamic weight of the channel's group of 16
+// channels. The draft projects every row's dynamic weights, for each stage,
+// tap and group of a `hidden`-wide layer.
+#define SPLASH_DRAFT_CONVOLUTION_STAGES 2u
+#define SPLASH_DRAFT_CONVOLUTION_TAPS 2u
+#define SPLASH_DRAFT_CONVOLUTION_GROUP 16u
+inline constexpr uint32_t draft_dynamic_width(uint32_t hidden) {
+  return SPLASH_DRAFT_CONVOLUTION_STAGES * SPLASH_DRAFT_CONVOLUTION_TAPS *
+         (hidden / SPLASH_DRAFT_CONVOLUTION_GROUP);
+}
+
+// The batched draft kernels' grids cover exactly the dispatch's lanes:
+// per-lane arrays hold those lanes, and entries past them are zero and unread.
+
 struct DraftConvBatchParams {
-  uint32_t groups;
   uint32_t finish;
-  uint32_t lanes;
 };
 
-static_assert(sizeof(DraftConvBatchParams) == 12,
-              "Draft convolution parameters are 12 bytes on both sides");
+static_assert(sizeof(DraftConvBatchParams) == 4,
+              "Draft convolution parameters are 4 bytes on both sides");
 
-struct DraftQkvBatchParams {
-  uint32_t groups;
-  uint32_t lanes;
-};
-
-static_assert(sizeof(DraftQkvBatchParams) == 8,
-              "Draft QKV parameters are 8 bytes on both sides");
-
+// The attention core's split count (SPLASH_DRAFT_ATTENTION_SPLITS) and its
+// rings' slots per KV head (SPLASH_DRAFT_SLIDING_WINDOW) are compiled in.
+// value_stride, the values ring's stride between head dimensions, is the
+// window too (the op passes nothing else) but stays a run-time value: with it
+// compiled into the value tiles, the split kernel returns wrong rows at random
+// on an M5 Max, and reports no error, when MTL_SHADER_VALIDATION instruments
+// threadgroup memory, tensors and resource usage together; with any of the
+// three off, without validation, or on an M3 Max, its output is bitwise that
+// of the run-time stride.
 struct DraftAttentionBatchParams {
-  uint32_t cache_stride;
-  uint32_t splits;
+  uint32_t value_stride;
   uint32_t lanes;
   uint32_t cache_length[SPLASH_MAXIMUM_BATCH_WIDTH];
 };
 
-static_assert(sizeof(DraftAttentionBatchParams) == 28,
-              "Draft attention parameters are 28 bytes on both sides");
+static_assert(sizeof(DraftAttentionBatchParams) == 24,
+              "Draft attention parameters are 24 bytes on both sides");
 
-// SPLASH_DRAFT_AHEAD: host templates for the next draft block. The prepare
-// kernel fills cache_length/anchor from this cycle's device acceptance.
+// SPLASH_DRAFT_AHEAD: host templates of the next draft block's inputs.
+// draft_ahead_prepare applies this cycle's device acceptance: anchor = the
+// lane's last retained target token, cache length and positions advance by
+// the retained count; uniforms go to the lanes in uniform_lanes, as the host
+// uploads them.
 struct DraftAheadParams {
   DraftAttentionBatchParams attention;
   SelectorBatchParams selector;
   uint32_t start_position[SPLASH_MAXIMUM_BATCH_WIDTH];
   uint32_t mask_token;
-  float uniforms[SPLASH_MAXIMUM_BATCH_WIDTH * 16];
+  uint32_t uniform_lanes;
+  float uniforms[SPLASH_MAXIMUM_BATCH_WIDTH * SPLASH_SAMPLING_UNIFORMS];
 };
 
-static_assert(sizeof(DraftAheadParams) == 352,
-              "Draft-ahead parameters are 352 bytes on both sides");
+static_assert(sizeof(DraftAheadParams) ==
+                  sizeof(DraftAttentionBatchParams) + sizeof(SelectorBatchParams) +
+                      4 * (SPLASH_MAXIMUM_BATCH_WIDTH + 2 +
+                           SPLASH_MAXIMUM_BATCH_WIDTH * SPLASH_SAMPLING_UNIFORMS),
+              "Draft-ahead parameters have one layout on both sides");
 
 struct DraftContextParams {
   uint32_t tokens;
-  uint32_t cache_stride;
   uint32_t start_position;
 };
 
-static_assert(sizeof(DraftContextParams) == 12,
-              "Draft context prefill parameters are 12 bytes on both sides");
+static_assert(sizeof(DraftContextParams) == 8,
+              "Draft context prefill parameters are 8 bytes on both sides");
 
 struct DraftContextBatchParams {
-  uint32_t cache_stride;
-  uint32_t lanes;
   uint32_t start_position[SPLASH_MAXIMUM_BATCH_WIDTH];
 };
 
-static_assert(sizeof(DraftContextBatchParams) == 24,
-              "Draft context commit parameters are 24 bytes on both sides");
-
-struct CaptureParams {
-  uint32_t rows;
-  uint32_t slot;
-  uint32_t source_start;
-  uint32_t destination_start;
-  uint32_t hidden_width;
-  uint32_t target_width;
-};
-
-static_assert(sizeof(CaptureParams) == 24,
-              "Target hidden capture parameters are 24 bytes on both sides");
-
-struct LastHiddenRowsParams {
-  uint32_t rows;
-  uint32_t width;
-};
-
-static_assert(sizeof(LastHiddenRowsParams) == 8,
-              "Last hidden row parameters are 8 bytes on both sides");
+static_assert(sizeof(DraftContextBatchParams) == 16,
+              "Draft context commit parameters are 16 bytes on both sides");

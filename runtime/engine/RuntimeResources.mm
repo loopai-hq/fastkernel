@@ -1,44 +1,27 @@
 // Modified by meowkernels.
 #include "engine/RuntimeResources.hpp"
+#include "AwakeClock.hpp"
+#include "Checked.hpp"
+#include "StderrLine.hpp"
+#include "engine/DiskLabels.hpp"
+#include "engine/Engine.hpp"
 #include "metal/abi/ExecutionGeometry.h"
+#include "model/WeightStore.hpp"
+#include "ops/AneFfnMeasurement.hpp"
 
 #import <Foundation/Foundation.h>
-#include <CommonCrypto/CommonDigest.h>
 
 #include <array>
-#include <ctime>
-#include <iostream>
+#include <chrono>
+#include <iomanip>
 #include <limits>
 #include <optional>
+#include <span>
 #include <sstream>
 #include <utility>
 
 namespace splash::engine {
 namespace {
-
-template <typename... Parts>
-void logKernelStartup(const Parts &...parts) noexcept {
-  try {
-    std::ostringstream text;
-    (text << ... << parts);
-    const std::string message = text.str();
-    const std::time_t now = std::time(nullptr);
-    std::tm local{};
-    char timestamp[9] = "--:--:--";
-    if (localtime_r(&now, &local))
-      std::strftime(timestamp, sizeof(timestamp), "%H:%M:%S", &local);
-    std::ostringstream line;
-    line << timestamp << ' ';
-    // Native stderr is inherited by serve. Keep each optional startup notice
-    // bounded and on one line, including messages from caught exceptions.
-    for (unsigned char character : std::string_view(message).substr(0, 768))
-      line << (character < 32 || character == 127 ? ' ' : char(character));
-    if (message.size() > 768) line << "...";
-    std::cerr << line.str() << '\n';
-  } catch (...) {
-    // Optional diagnostics must not affect startup or serving.
-  }
-}
 
 static_assert(model::ExecutionLimits::maximumBatchWidth ==
               SPLASH_MAXIMUM_BATCH_WIDTH);
@@ -55,17 +38,6 @@ static_assert(model::ExecutionLimits::draftContextTokens ==
 static_assert(model::ExecutionLimits::speculativeScratchTokens ==
               SPLASH_SPECULATIVE_SCRATCH_TOKENS);
 
-std::string errorText(RuntimeResourceStage stage, std::string_view message,
-                      std::string_view budgetDescription) {
-  std::ostringstream out;
-  out << "runtime resource assembly failed [" << runtimeResourceStageName(stage)
-      << "]: " << message;
-  if (!budgetDescription.empty()) {
-    out << '\n' << budgetDescription;
-  }
-  return out.str();
-}
-
 uint8_t hexNibble(char value) {
   if (value >= '0' && value <= '9') {
     return static_cast<uint8_t>(value - '0');
@@ -79,38 +51,11 @@ uint8_t hexNibble(char value) {
   throw std::invalid_argument("manifest SHA-256 is not hexadecimal");
 }
 
-uint64_t checkedAdd(uint64_t left, uint64_t right, std::string_view label) {
-  if (right > std::numeric_limits<uint64_t>::max() - left) {
-    throw std::overflow_error(std::string(label) + " byte count overflows");
-  }
-  return left + right;
-}
-
-uint64_t packedModelFileBytes(const std::filesystem::path &root) {
-  uint64_t bytes = 0;
-  for (std::string_view directory : {"target", "draft", "vision"}) {
-    if (directory == "vision" && model::textOnlyRequested())
-      continue;
-    const std::filesystem::path package = root / directory;
-    for (const auto &entry :
-         std::filesystem::recursive_directory_iterator(package)) {
-      if (!entry.is_regular_file())
-        continue;
-      bytes = checkedAdd(bytes, entry.file_size(), "model package");
-    }
-  }
-  if (!bytes) {
-    throw std::invalid_argument("model package contains no regular files");
-  }
-  return bytes;
-}
-
 uint64_t mebibytes(uint64_t bytes) noexcept { return bytes / kMiB; }
 
 // The startup admission rule. Deliberately independent of the model size:
-// weights are mapped, not copied, so the package never has to fit in
-// reclaimable memory at once. Residency is what must fit, and it is checked
-// here again at every Metal operation as loading and warmup build it up.
+// it is checked here again at every Metal operation, each image's
+// allocation included, as loading and warmup build the residency up.
 void requireStartupHeadroom(
     const MemoryGovernor::HostAvailableMemoryProvider &hostAvailableMemory,
     uint64_t reserveBytes, MemoryPressure pressure) {
@@ -131,6 +76,78 @@ void requireStartupHeadroom(
   }
 }
 
+// The format of a persistent cache's files and of what its copies hold. A
+// change to either, such as a fix to a kernel that writes KV or state, bumps
+// it, so that no start takes back copies of the old one.
+constexpr uint32_t kPersistentCacheFormat = 1;
+// How long a start waits for the cache directory another process holds: one
+// that is closing has finished its flush, or been stopped by the server, by
+// then (server/runtime.py `_shutdown_grace_seconds`).
+constexpr std::chrono::seconds kCacheLockWait{20};
+// Another model's cache nobody opened for this long is removed.
+constexpr std::chrono::hours kStaleCache{24 * 14};
+// How long a start that follows an unclean end serves on probation: the
+// server counts a failure within that time toward a crash loop
+// (server/backend.py `CRASH_LOOP_WINDOW_SECONDS`).
+constexpr std::chrono::seconds kProbation{60};
+
+// A persistent tier's directory under root and its files, empty when another
+// process holds the directory or it cannot be used: the tier then keeps
+// temporary files, as without one.
+PersistentCacheFiles openPersistentCache(const std::filesystem::path &root,
+                                         const std::string &cacheNamespace,
+                                         uint64_t kvSlotBytes, uint64_t stateSlotBytes,
+                                         const std::shared_ptr<model::DiskBudget> &budget,
+                                         const std::function<bool()> &cancelled) {
+  try {
+    PersistentCacheFiles files;
+    files.directory = CacheDirectory::open(root, cacheNamespace, kCacheLockWait,
+                                           kStaleCache, cancelled);
+    if (!files.directory) {
+      if (!cancelled || !cancelled())
+        logLine("Persistent cache ", (root / cacheNamespace).string(),
+                " is in use by another process; this one keeps a temporary cache.");
+      return {};
+    }
+    const std::vector<std::byte> tag(reinterpret_cast<const std::byte *>(cacheNamespace.data()),
+                                     reinterpret_cast<const std::byte *>(cacheNamespace.data()) +
+                                         cacheNamespace.size());
+    files.kv = std::make_shared<model::SlotFile>(
+        kvSlotBytes, budget,
+        model::SlotFile::Persistence{files.directory->kvSlots(), files.directory->kvRecords(),
+                                     tag, sizeof(KvBlockLabel)});
+    files.states = std::make_shared<model::SlotFile>(
+        stateSlotBytes, budget,
+        model::SlotFile::Persistence{files.directory->stateSlots(),
+                                     files.directory->stateRecords(), tag, sizeof(StateLabel)});
+    return files;
+  } catch (const std::exception &error) {
+    logLine("Persistent cache disabled (", error.what(), "); this process keeps a temporary cache.");
+    return {};
+  }
+}
+
+// The layers' part of what ane::recall() keeps a calibration under: their
+// shapes and formats.
+std::string calibrationKey(std::span<const ops::SwiGluProjections> layers) {
+  std::string key = "ane-ffn calibration";
+  for (const ops::SwiGluProjections &layer : layers)
+    for (const ops::Projection *projection : {layer.gate, layer.up, layer.down}) {
+      const bool affine = projection->layout() == ops::WeightLayout::Affine64;
+      key += " " + std::to_string(projection->outputSize) + "x" + std::to_string(projection->inputSize) + ":" +
+             (affine ? "a" : "g" + std::to_string(projection->blocks().segments.front().formatId));
+    }
+  return key;
+}
+
+// The split's part of what the engine gives back while idle, if it runs one.
+std::optional<ReleasableMemory::Split> idleSplit(ops::AneFfn *split) {
+  if (!split)
+    return std::nullopt;
+  return ReleasableMemory::Split{[split] { return split->release(); },
+                                 [split] { split->restore(); }};
+}
+
 std::array<uint8_t, 32> parseSha256(std::string_view value) {
   if (value.size() != 64) {
     throw std::invalid_argument(
@@ -144,66 +161,18 @@ std::array<uint8_t, 32> parseSha256(std::string_view value) {
   return result;
 }
 
-std::string sha256(std::string_view value) {
-  if (value.size() > std::numeric_limits<CC_LONG>::max()) {
-    throw std::overflow_error("runtime cache identity is too large to hash");
-  }
-  std::array<unsigned char, CC_SHA256_DIGEST_LENGTH> digest{};
-  if (!CC_SHA256(value.data(), static_cast<CC_LONG>(value.size()),
-                 digest.data())) {
-    throw std::runtime_error("runtime cache identity SHA-256 failed");
-  }
-  return digestHex(digest);
-}
-
-std::string
-canonicalRuntimeCacheNamespace(const RuntimeCacheIdentity &identity) {
-  // Length-prefix the unconstrained strings; every other field has a fixed
-  // name and decimal representation. This is the one semantic cache tuple,
-  // never a hash of compiler padding or native struct bytes.
-  std::ostringstream canonical;
-  canonical << "splash.runtime-cache-identity\n"
-            << "loaded_model_layout_sha256=" << identity.modelLayoutSha256
-            << '\n'
-            << "build_id_bytes=" << identity.buildId.size() << '\n'
-            << "build_id=" << identity.buildId << '\n'
-            << "dtype=" << kv::storageFormatName(identity.kvLayout.format()) << '\n'
-            << "page_tokens=" << identity.kvLayout.pageTokens << '\n'
-            << "elements_per_scale=" << identity.kvLayout.elementsPerScale
-            << '\n'
-            << "target_model_sha256="
-            << digestHex(identity.kvLayout.modelArtifactSha256) << '\n'
-            << "q8_quantization=" << identity.kvLayout.quantization << '\n'
-            << "q8_scale_type=" << identity.kvLayout.scaleType << '\n'
-            << "q8_key_layout=" << identity.kvLayout.keyLayout << '\n'
-            << "q8_value_layout=" << identity.kvLayout.valueLayout << '\n'
-            << "q8_attention_layers=" << identity.kvLayout.attentionLayers
-            << '\n'
-            << "q8_kv_heads=" << identity.kvLayout.kvHeads << '\n'
-            << "q8_head_dimension=" << identity.kvLayout.headDimension << '\n'
-            << "q8_quantized_minimum=" << identity.kvLayout.quantizedMinimum
-            << '\n'
-            << "q8_quantized_maximum=" << identity.kvLayout.quantizedMaximum
-            << '\n'
-            << "q8_bytes_per_layer_page=" << identity.kvLayout.bytesPerLayerPage
-            << '\n'
-            << "q8_bytes_per_model_page=" << identity.kvLayout.bytesPerModelPage
-            << '\n';
-  return sha256(canonical.str());
-}
-
-void requireLoadedModel(const model::ModelPackage &package) {
-  if (!package.targetActualAllocatedBytes() ||
-      !package.draft.actualAllocatedBytes ||
-      (!package.vision.actualAllocatedBytes && !model::textOnlyRequested()) ||
-      package.manifestFingerprintSha256.empty() ||
-      package.targetManifestFingerprint().empty()) {
-    throw std::invalid_argument(
-        "loaded model package has incomplete allocation accounting");
-  }
-}
-
 } // namespace
+
+void requireLoadedModel(const model::LoadedModel &loaded) {
+  if (!loaded.targetActualAllocatedBytes() ||
+      !loaded.draft.actualAllocatedBytes ||
+      (loaded.descriptor.hasVision() && !loaded.vision.actualAllocatedBytes) ||
+      loaded.manifestFingerprintSha256.empty() ||
+      loaded.targetManifestFingerprint().empty()) {
+    throw std::invalid_argument(
+        "loaded model has incomplete allocation accounting");
+  }
+}
 
 std::string_view runtimeResourceStageName(RuntimeResourceStage stage) {
   switch (stage) {
@@ -234,67 +203,88 @@ makeRuntimeCacheIdentity(std::string_view combinedManifestSha256,
   if (!targetKvLayout.valid()) {
     throw std::invalid_argument("runtime target KV layout is invalid");
   }
-  // Parse both digests even though only the target digest belongs in the
-  // physical-page ABI. This rejects malformed combined manifests early.
-  std::array<uint8_t, 32> combinedDigest = parseSha256(combinedManifestSha256);
-  std::array<uint8_t, 32> targetDigest = parseSha256(targetManifestSha256);
+  // Parsing rejects a malformed manifest digest before the KV pool and the
+  // cache are built.
   RuntimeCacheIdentity result;
-  result.modelLayoutSha256 = digestHex(combinedDigest);
+  result.modelLayoutSha256 = model::digestHex(parseSha256(combinedManifestSha256));
   result.buildId = buildId;
-  result.kvLayout = kv::makeLayoutGuard(targetKvLayout, targetDigest);
-  result.namespaceSha256 = canonicalRuntimeCacheNamespace(result);
-  result.cacheNamespace.digest = parseSha256(result.namespaceSha256);
+  result.kvLayout = targetKvLayout;
+  result.targetModelSha256 = model::digestHex(parseSha256(targetManifestSha256));
   return result;
+}
+
+std::string persistentCacheNamespace(const RuntimeCacheIdentity &identity,
+                                     const model::CompositeStateLayout &states) {
+  const kv::Layout &kv = identity.kvLayout;
+  const model::GdnStateLayout &gdn = states.target;
+  const model::DraftStateLayout &draft = states.draft;
+  std::ostringstream canonical;
+  canonical << "splash-persistent-cache-v" << kPersistentCacheFormat << '\n'
+            << identity.modelLayoutSha256 << '\n'
+            << "kv " << kv::kPageTokens << ' ' << kv.attentionLayers << ' ' << kv.kvHeads << ' '
+            << kv.headDimension << ' ' << kv::formatName(kv.format) << '\n'
+            << "gdn " << gdn.layers << ' ' << gdn.convolutionHistory << ' '
+            << gdn.convolutionChannels << ' ' << gdn.recurrentGroups << ' ' << gdn.recurrentRows
+            << ' ' << gdn.recurrentColumns << '\n'
+            << "draft " << draft.layers << ' ' << draft.kvHeads << ' ' << draft.headDimension << ' '
+            << SPLASH_DRAFT_SLIDING_WINDOW << '\n';
+  // 128 bits name it.
+  return model::weightDigest(canonical.str()).substr(0, 32);
 }
 
 RuntimeResourcesError::RuntimeResourcesError(RuntimeResourceStage stage,
                                              std::string message,
-                                             std::string statusJson,
                                              std::string budgetDescription,
                                              RuntimeResourceFailure failure)
-    : std::runtime_error(errorText(stage, message, budgetDescription)),
-      failure_(failure),
-      message_(std::move(message)), statusJson_(std::move(statusJson)),
+    : std::runtime_error(std::move(message)), stage_(stage), failure_(failure),
       budgetDescription_(std::move(budgetDescription)) {}
 
 RuntimeResources::RuntimeResources(
-    std::unique_ptr<metal::MetalBackend> backend, model::ModelPackage model,
-    ops::ExecutionPlans operators,
-    EngineMemoryPlan memoryPlan, model::ModelMemoryPlan modelMemoryPlan,
+    PersistentCacheFiles persistentCache,
+    std::unique_ptr<metal::MetalBackend> backend, model::LoadedModel model,
+    ops::ExecutionPlans operators, EngineMemoryPlan memoryPlan,
     RuntimeCacheIdentity cacheIdentity,
     std::unique_ptr<MemoryGovernor> memoryGovernor,
     std::unique_ptr<kv::PageStorage> kvPages,
-    std::unique_ptr<model::StateStorage> stateStorage,
+    std::unique_ptr<model::QwenStateStorage> stateStorage,
+    std::unique_ptr<KvPageTier> kvTier,
     std::unique_ptr<KvPool> kvPool, std::unique_ptr<engine::Cache> cache,
-    uint32_t maximumImagePatches)
-    : backend_(std::move(backend)), model_(std::move(model)),
+    std::unique_ptr<ops::AneFfn> aneFfn, AneFfnOutcome aneFfnOutcome,
+    std::optional<uint64_t> hostAvailableAtStart)
+    : persistentCache_(std::move(persistentCache)),
+      backend_(std::move(backend)), model_(std::move(model)),
       operators_(std::move(operators)),
       memoryPlan_(std::move(memoryPlan)),
-      modelMemoryPlan_(std::move(modelMemoryPlan)),
       cacheIdentity_(std::move(cacheIdentity)),
       memoryGovernor_(std::move(memoryGovernor)), kvPages_(std::move(kvPages)),
-      stateStorage_(std::move(stateStorage)), kvPool_(std::move(kvPool)),
-      cache_(std::move(cache)), maximumImagePatches_(maximumImagePatches) {}
+      stateStorage_(std::move(stateStorage)), kvTier_(std::move(kvTier)),
+      kvPool_(std::move(kvPool)),
+      cache_(std::move(cache)), aneFfn_(std::move(aneFfn)),
+      releasableMemory_(*model_.images, idleSplit(aneFfn_.get())),
+      aneFfnOutcome_(std::move(aneFfnOutcome)), hostAvailableAtStart_(hostAvailableAtStart) {}
 
 std::unique_ptr<RuntimeResources>
-RuntimeResources::create(const RuntimeResourcesConfig &config) {
+RuntimeResources::create(const RuntimeResourcesConfig &config,
+                         uint32_t requestedContextTokens) {
   if (config.metallibPath.empty() || config.modelRoot.empty() ||
       !kv::validFormat(config.kvFormat) ||
-      !config.model.valid() ||
+      !config.model.valid() || !config.hostAvailableMemory ||
       config.buildId.empty() || !config.maximumImagePatches ||
-      config.maximumImagePatches % 4) {
+      config.maximumImagePatches % 4 ||
+      config.maximumImagePatches > ops::kMaximumImagePatches) {
     throw RuntimeResourcesError(
         RuntimeResourceStage::Configuration,
-        "metallib path, model root, build id, and a merge-aligned image "
-        "patch limit are required");
+        "metallib path, model root, a valid model layout and KV format, a "
+        "host memory probe, build id, and a merge-aligned image patch limit no "
+        "larger than the protocol's are required");
   }
   std::unique_ptr<metal::MetalBackend> backend;
   try {
-    backend =
-        std::make_unique<metal::MetalBackend>(config.metallibPath.string());
+    backend = std::make_unique<metal::MetalBackend>(config.metallibPath.string(),
+                                                    config.idleReleaseSeconds);
   } catch (const metal::MetalAllocationError &error) {
     throw RuntimeResourcesError(RuntimeResourceStage::BackendCreation,
-                                error.what(), {}, {},
+                                error.what(), {},
                                 resourceAllocationFailure(error.failure()));
   } catch (const std::exception &error) {
     throw RuntimeResourcesError(RuntimeResourceStage::BackendCreation,
@@ -304,206 +294,245 @@ RuntimeResources::create(const RuntimeResourcesConfig &config) {
   const DeviceCapabilities &device = backend->capabilities();
   if (auto error = device.validationError()) {
     throw RuntimeResourcesError(RuntimeResourceStage::CapabilityValidation,
-                                *error, deviceStatusJson(device));
+                                *error);
   }
 
   const uint64_t hostReserveBytes =
       EngineMemoryPolicy::hostAvailableReserveBytes(device.physicalMemoryBytes);
-  MemoryGovernor::HostAvailableMemoryProvider hostAvailableMemory =
-      config.hostAvailableMemory ? config.hostAvailableMemory
-                                 : queryHostAvailableMemory;
-  backend->setOperationGuard(
-      [cancelled = config.cancelled, pressure = config.memoryPressure,
-       hostAvailableMemory, hostReserveBytes] {
-        if (cancelled && cancelled())
-          throw metal::MetalBackendError("Metal operation cancelled");
-        requireStartupHeadroom(hostAvailableMemory, hostReserveBytes,
-            pressure ? pressure() : MemoryPressure::Normal);
-      });
+  // What other applications leave, measured before the engine takes any.
+  const std::optional<uint64_t> hostAvailableAtStart =
+      config.hostAvailableMemory();
+  // Startup work stops on cancellation and keeps its reserve of host memory.
+  const auto throwIfCancelled = [cancelled = config.cancelled] {
+    if (cancelled && cancelled())
+      throw metal::MetalBackendError("startup cancelled");
+  };
+  const auto currentPressure = [pressure = config.memoryPressure] {
+    return pressure ? pressure() : MemoryPressure::Normal;
+  };
+  const auto admitMetalOperation = [throwIfCancelled, currentPressure,
+                                    hostAvailableMemory = config.hostAvailableMemory,
+                                    hostReserveBytes] {
+    throwIfCancelled();
+    requireStartupHeadroom(hostAvailableMemory, hostReserveBytes,
+                           currentPressure());
+  };
+  backend->setOperationGuard(admitMetalOperation);
+  // A synchronous command wait gives up when the process shuts down, also
+  // after startup.
+  backend->setWaitInterrupt(config.cancelled);
+  // One disk quota serves KV pages and states. Without room for a state,
+  // disk KV cannot preserve a restorable prefix, so the tier stays off, and
+  // no state's write needs the staging buffer the plan would set aside.
+  std::shared_ptr<model::DiskBudget> diskBudget;
+  std::shared_ptr<model::SlotFile> stateFile;
+  const uint64_t stateBytes = config.model.stateLayout.cachedBytes();
+  if (config.maximumCacheDiskBytes) {
+    diskBudget = std::make_shared<model::DiskBudget>(config.maximumCacheDiskBytes);
+    try {
+      stateFile = std::make_shared<model::SlotFile>(
+          model::SlotFile::slotBytesFor(stateBytes), diskBudget);
+    } catch (const std::exception &error) {
+      diskBudget.reset();
+      logLine("SSD cache disabled (", error.what(),
+              "); no state staging is set aside.");
+    }
+  }
+  // A state's write to the disk tier stages through one buffer of a state's
+  // size. It is the backend's like every other, so the governor charges it
+  // beside the weights and the plan sets it aside before it sizes KV.
+  const uint64_t stateStagingBytes = stateFile ? stateBytes : 0;
   try {
-    const uint64_t modelBytes = packedModelFileBytes(config.modelRoot);
     const uint64_t hardBudgetBytes = EngineMemoryPolicy::hardBudgetBytes(
         device.recommendedMaxWorkingSetBytes, config.maximumMemoryBytes);
-    // Reject an impossible weight budget before registering model buffers.
-    // The full plan below still uses measured allocations and runtime costs.
-    if (modelBytes > hardBudgetBytes) {
+    // Reject a model that cannot fit before loading its weights. Beside
+    // them the plan needs at least the runtime reserves, one lane's state,
+    // the KV runway and any disk tier state staging; the full plan below adds
+    // the arenas.
+    kv::Layout kvLayout = config.model.targetKvLayout;
+    kvLayout.format = config.kvFormat;
+    uint64_t fixedBytes = 0;
+    for (const uint64_t bytes :
+         {model::modelWeightBytes(config.modelRoot, config.model),
+          model::kPipelineReserveBytes, model::kRuntimeOverheadReserveBytes,
+          stateStagingBytes}) {
+      if (!checkedAdd(fixedBytes, bytes, fixedBytes))
+        fixedBytes = std::numeric_limits<uint64_t>::max();
+    }
+    const uint64_t requiredBytes =
+        minimumRequiredBytes(fixedBytes, config.model.stateLayout.laneBytes(),
+                             kvLayout)
+            .value_or(std::numeric_limits<uint64_t>::max());
+    if (requiredBytes > hardBudgetBytes) {
       throw RuntimeResourcesError(
           RuntimeResourceStage::MemoryPlanning,
-          "model weights require " + std::to_string(modelBytes) +
+          "model weights with the runtime reserves, one lane's state, the KV "
+          "runway and any SSD cache state staging require " +
+              std::to_string(requiredBytes) +
               " bytes but the Metal memory budget is " +
               std::to_string(hardBudgetBytes) + " bytes",
-          deviceStatusJson(device), {}, RuntimeResourceFailure::EngineCapacity);
+          {}, RuntimeResourceFailure::EngineCapacity);
     }
-    // Fail before opening the package when the machine has no headroom at
+    // Fail before loading the model when the machine has no headroom at
     // all; the guard installed above keeps checking as residency grows.
-    requireStartupHeadroom(hostAvailableMemory, hostReserveBytes,
-        config.memoryPressure ? config.memoryPressure() : MemoryPressure::Normal);
+    admitMetalOperation();
   } catch (const RuntimeResourcesError &) {
     throw;
   } catch (const metal::MetalAllocationError &error) {
     throw RuntimeResourcesError(RuntimeResourceStage::ModelLoading,
-                                error.what(), deviceStatusJson(device), {},
+                                error.what(), {},
                                 resourceAllocationFailure(error.failure()));
   } catch (const std::exception &error) {
     throw RuntimeResourcesError(RuntimeResourceStage::ModelLoading,
-                                error.what(), deviceStatusJson(device));
+                                error.what());
   }
 
-  model::ModelPackage package;
+  model::LoadedModel loaded;
   try {
-    package = model::loadModelPackage(*backend, config.modelRoot, config.model);
-    requireLoadedModel(package);
+    const auto started = AwakeClock::now();
+    loaded = model::loadModel(*backend, config.modelRoot, config.model);
+    requireLoadedModel(loaded);
+    const std::chrono::duration<double> loading = AwakeClock::now() - started;
+    logLine("Weights loaded in ", std::fixed, std::setprecision(2),
+            loading.count(), " s.");
   } catch (const metal::MetalAllocationError &error) {
     throw RuntimeResourcesError(RuntimeResourceStage::ModelLoading,
-                                error.what(), deviceStatusJson(device), {},
+                                error.what(), {},
                                 resourceAllocationFailure(error.failure()));
   } catch (const std::exception &error) {
     throw RuntimeResourcesError(RuntimeResourceStage::ModelLoading,
-                                error.what(), deviceStatusJson(device));
+                                error.what());
   }
 
-  // One selection owner is used both before allocation and during encoding.
-  // The engine lends it to model execution without inspecting kernel choices.
+  // One plan owner is used both before allocation and during encoding. The
+  // engine lends it to model execution without inspecting its plans.
   ops::ExecutionPlans operators(device);
   model::ModelMemoryPlan modelMemoryPlan;
-  // SPLASH_DRAFT_HEAD_IDS: the restricted draft head is a gathered copy of target
-  // head rows. It is planned with the draft weights; set to 0 below when it does
+  try {
+    modelMemoryPlan = model::plannedRuntimeMemory(loaded, operators, config.kvFormat);
+  } catch (const std::exception &error) {
+    throw RuntimeResourcesError(
+        RuntimeResourceStage::MemoryPlanning,
+        std::string("model allocated-size plan is invalid: ") + error.what());
+  }
+  // SPLASH_DRAFT_HEAD_IDS: the restricted draft head is a gathered copy of
+  // target head rows, planned with the draft weights; 0 below when it does
   // not fit, and the model then drafts with the full head.
-  uint64_t draftHeadBytes =
-      model::DFlashDraft::restrictedHeadPlannedBytes(package.draft.layout);
-  auto prepareMemory = [&]() -> EngineMemoryPlan {
-    try {
-      modelMemoryPlan = model::plannedRuntimeMemory(device, package, operators, config.kvFormat);
-      if (auto error = modelMemoryPlan.validationError()) {
-        throw std::invalid_argument(*error);
-      }
-    } catch (const std::exception &error) {
-      throw RuntimeResourcesError(
-          RuntimeResourceStage::MemoryPlanning,
-          std::string("model allocated-size plan is invalid: ") + error.what(),
-          deviceStatusJson(device));
-    }
-
+  uint64_t draftHeadBytes = model::DFlashDraft::restrictedHeadPlannedBytes(loaded.draft.layout);
+  // The engine's memory plan, with `aneFfnBytes` set aside for the prefill
+  // FFN's Neural Engine split.
+  const auto planMemory = [&](uint64_t aneFfnBytes) {
     ModelMemoryFootprint footprint{
-        package.targetActualAllocatedBytes(),
-        package.draft.actualAllocatedBytes + draftHeadBytes,
-        package.vision.actualAllocatedBytes,
-        modelMemoryPlan.activeStateCellPlannedAllocatedBytes,
-        modelMemoryPlan.sharedPrefillPlannedAllocatedBytes,
-        modelMemoryPlan.sharedDecodePlannedAllocatedBytes,
-        modelMemoryPlan.pipelineReserveBytes,
-        modelMemoryPlan.runtimeOverheadReserveBytes,
+        loaded.targetActualAllocatedBytes(),
+        loaded.draft.actualAllocatedBytes + draftHeadBytes,
+        loaded.vision.actualAllocatedBytes,
+        modelMemoryPlan,
+        stateStagingBytes,
+        aneFfnBytes,
     };
-
     ModelMemoryProfile modelProfile{
-        package.name(), package.maximumContextTokens(),
-        package.targetKvLayout(config.kvFormat), footprint};
-    EngineMemoryPlanResult planResult =
-        evaluateEngineMemoryPlan(device, modelProfile, config.maximumMemoryBytes);
-    if (!planResult.plan) {
-      throw RuntimeResourcesError(
-          RuntimeResourceStage::MemoryPlanning, planResult.status.message,
-          planResult.status.toStatusJson(), planResult.status.describe());
-    }
-    EngineMemoryPlan memoryPlan = std::move(*planResult.plan);
-    return memoryPlan;
+        loaded.name(), loaded.maximumContextTokens(),
+        loaded.targetKvLayout(config.kvFormat), footprint};
+    return evaluateEngineMemoryPlan(device, modelProfile, config.maximumMemoryBytes);
   };
-  // Establish the serving baseline and the one real memory governor before
-  // installing the shipped choices. Selected workspace never gets a separate
-  // allowance or replaces the immutable engine-wide ceiling.
-  EngineMemoryPlan memoryPlan = [&] {
-    try {
-      return prepareMemory();
-    } catch (const RuntimeResourcesError &) {
-      if (!draftHeadBytes) throw;
-      draftHeadBytes = 0;
-      logKernelStartup("The restricted draft head (SPLASH_DRAFT_HEAD_IDS) does not fit "
-                       "this memory budget; drafting with the full head.");
-      return prepareMemory();
-    }
-  }();
+  EngineMemoryPlanResult planResult = planMemory(0);
+  if (!planResult.plan && draftHeadBytes) {
+    draftHeadBytes = 0;
+    logLine("The restricted draft head (SPLASH_DRAFT_HEAD_IDS) does not fit this memory budget; "
+            "drafting with the full head.");
+    planResult = planMemory(0);
+  }
+  if (!planResult.plan) {
+    throw RuntimeResourcesError(RuntimeResourceStage::MemoryPlanning,
+                                planResult.status.message,
+                                planResult.status.describe());
+  }
+  EngineMemoryPlan memoryPlan = std::move(*planResult.plan);
 
   RuntimeCacheIdentity cacheIdentity;
   try {
     cacheIdentity = makeRuntimeCacheIdentity(
-        package.manifestFingerprintSha256,
-        package.targetManifestFingerprint(), config.buildId,
-        package.targetKvLayout(config.kvFormat));
+        loaded.manifestFingerprintSha256,
+        loaded.targetManifestFingerprint(), config.buildId,
+        loaded.targetKvLayout(config.kvFormat));
   } catch (const std::exception &error) {
     throw RuntimeResourcesError(RuntimeResourceStage::ModelLoading,
-                                error.what(), memoryPlan.toStatusJson(),
+                                error.what(),
                                 memoryPlan.breakdown().describe());
   }
 
   try {
-    const auto baselineMemoryPlan = memoryPlan;
-    const auto baselineModelMemoryPlan = modelMemoryPlan;
-    const EngineMemoryBreakdown &baselineBudget = baselineMemoryPlan.breakdown();
-    const uint64_t runtimeReserve =
-        baselineBudget.pipelineReserveBytes + baselineBudget.runtimeOverheadReserveBytes;
-    if (baselineBudget.hardBudgetBytes <= runtimeReserve) {
-      throw std::logic_error("runtime reserves consume the Metal budget");
-    }
-    // The governor observes the complete Metal footprint. Keeping explicit
-    // pipeline/allocator reserves outside its growth ceiling prevents elastic
-    // state and KV from silently consuming the startup safety margin.
-    const uint64_t elasticGrowthCeiling =
-        baselineBudget.hardBudgetBytes - runtimeReserve;
+    // The governor holds the complete Metal footprint to the hard budget. The
+    // plan budgets pipelines and driver allocations inside the pipeline and
+    // allocator reserves, so memory outside the backend's buffers is charged
+    // only beyond them, and elastic state and KV never grow into them. The
+    // split only moves bytes from KV to fixed runtime memory, so the governor
+    // is the same with it or without.
     auto memoryGovernor = std::make_unique<MemoryGovernor>(
-        *backend, elasticGrowthCeiling, hostReserveBytes, hostAvailableMemory);
+        *backend, memoryPlan.breakdown().hardBudgetBytes, hostReserveBytes, config.hostAvailableMemory,
+        memoryPlan.breakdown().pipelineReserveBytes + memoryPlan.breakdown().runtimeOverheadReserveBytes);
     if (config.memoryPressure)
       memoryGovernor->setPressure(config.memoryPressure());
-    std::string rejected;
-    auto adoptChoices = [&](const ops::OperatorChoices &choices) {
-      try {
-        operators.install(choices);
-        auto selectedMemoryPlan = prepareMemory();
-        const auto &selected = selectedMemoryPlan.breakdown();
-        if (selected.pipelineReserveBytes + selected.runtimeOverheadReserveBytes !=
-                runtimeReserve || selected.hardBudgetBytes != baselineBudget.hardBudgetBytes)
-          throw std::logic_error("operator choices changed the memory governor ceiling");
-        memoryPlan = std::move(selectedMemoryPlan);
-        return true;
-      } catch (const std::exception &error) {
-        // An illegal table entry or a host/user limit that no longer fits the
-        // selected scratch keeps the operator defaults, never a partial table.
-        rejected = error.what();
-        operators.install({});
-        modelMemoryPlan = baselineModelMemoryPlan;
-        memoryPlan = baselineMemoryPlan;
-        return false;
-      }
-    };
-    logKernelStartup("Kernel policy for GPU family ", device.appleGpuFamily,
-                     " with ", device.gpuCoreCount, " cores.");
-    if (config.operatorChoices && !config.operatorChoices->empty()) {
-      if (adoptChoices(*config.operatorChoices))
-        logKernelStartup("Installed supplied kernel choices.");
-      else
-        logKernelStartup("Supplied kernel choices rejected (", rejected,
-                         "); using the kernel policy.");
-    }
-
+    logLine("Kernel policy for GPU family ", device.appleGpuFamily,
+            " with ", device.gpuCoreCount, " cores.");
+    AneFfnStart aneFfn =
+        startAneFfn(aneFfnModel(*backend, loaded, operators, config.kvFormat, config.buildId, config.cancelled),
+                    config.aneFfn,
+                    requestedContextTokens, planMemory, config.cancelled);
+    if (aneFfn.plan)
+      memoryPlan = std::move(*aneFfn.plan);
     const EngineMemoryBreakdown &budget = memoryPlan.breakdown();
-    auto kvPages = std::make_unique<kv::PageStorage>(
-        *backend, memoryGovernor->allocationAdmission(), package.targetKvLayout(config.kvFormat),
-        budget.kvVirtualPages);
-    auto stateStorage = model::createStateStorage(
-        *backend, memoryGovernor->allocationAdmission(), package);
-    if (!stateStorage) {
-      throw std::runtime_error("model factory returned no state storage");
-    }
-    auto kvPool = std::make_unique<KvPool>(*kvPages);
-    auto cache =
-        std::make_unique<engine::Cache>(*kvPool, cacheIdentity.cacheNamespace);
 
-    if (kvPages->declaredBytes() != budget.kvVirtualBytes ||
-        kvPages->actualAllocatedBytes() > budget.kvVirtualBytes) {
-      throw std::runtime_error(
-          "actual KV page storage exceeds its planned category");
+    // Page ids for every extent the hard budget could hold: the governor,
+    // never the id range, limits the pool.
+    const uint64_t poolExtents = std::min<uint64_t>(
+        (budget.hardBudgetBytes + budget.kvExtentBytes - 1) / budget.kvExtentBytes,
+        std::numeric_limits<uint32_t>::max() / budget.kvExtentPages);
+    auto kvPages = std::make_unique<kv::PageStorage>(
+        *backend, memoryGovernor->allocationAdmission(), loaded.targetKvLayout(config.kvFormat),
+        static_cast<uint32_t>(poolExtents * budget.kvExtentPages), budget.kvExtentPages);
+    auto kvPool = std::make_unique<KvPool>(*kvPages, model::ExecutionLimits::warmupKvPages);
+    // A persistent tier keeps its files in a cache directory of its own.
+    // When another process holds it or it cannot be used, the tier keeps
+    // temporary files, as without one.
+    PersistentCacheFiles persistentCache;
+    if (stateFile && !config.persistentCacheRoot.empty()) {
+      persistentCache = openPersistentCache(
+          config.persistentCacheRoot,
+          persistentCacheNamespace(cacheIdentity, loaded.stateLayout()),
+          model::SlotFile::slotBytesFor(kvPages->bytesPerPage()), stateFile->slotBytes(),
+          diskBudget, config.cancelled);
+      if (persistentCache.directory)
+        stateFile = persistentCache.states;
     }
+    auto stateStorage = std::make_unique<model::QwenStateStorage>(
+        *backend, memoryGovernor->allocationAdmission(), loaded.stateLayout(),
+        stateFile);
+    std::unique_ptr<KvPageTier> kvTier;
+    if (diskBudget) {
+      try {
+        const uint64_t slotBytes = model::SlotFile::slotBytesFor(kvPages->bytesPerPage());
+        kvTier = std::make_unique<KvPageTier>(
+            *kvPages, persistentCache.kv
+                          ? persistentCache.kv
+                          : std::make_shared<model::SlotFile>(slotBytes, diskBudget));
+        logLine("SSD cache: ", config.maximumCacheDiskBytes / kMiB, " MiB for KV pages of ",
+                slotBytes / 1024, " KiB and states of ", stateBytes / kMiB,
+                " MiB; a state's write stages through ", stateStagingBytes / kMiB,
+                " MiB of the memory plan.");
+      } catch (const std::exception &error) {
+        // The persistent files are open by now; without the tier nothing
+        // would keep or replace their copies.
+        if (persistentCache.directory)
+          throw;
+        logLine("SSD cache KV storage disabled; state storage remains enabled (",
+                error.what(), ").");
+      }
+    }
+    auto cache = std::make_unique<engine::Cache>(*kvPool, kvTier.get(), diskBudget);
+
     if (stateStorage->actualAllocatedBytes() != 0) {
-      throw std::runtime_error("state cells were allocated eagerly");
+      throw std::runtime_error("lane state was allocated eagerly");
     }
     metal::MetalMemoryStats memory = backend->memoryStats();
     if (!backend->healthy()) {
@@ -518,77 +547,226 @@ RuntimeResources::create(const RuntimeResourcesConfig &config) {
     }
 
     auto result = std::unique_ptr<RuntimeResources>(new RuntimeResources(
-        std::move(backend), std::move(package), std::move(operators),
-        std::move(memoryPlan),
-        std::move(modelMemoryPlan), std::move(cacheIdentity),
+        std::move(persistentCache), std::move(backend), std::move(loaded),
+        std::move(operators), std::move(memoryPlan), std::move(cacheIdentity),
         std::move(memoryGovernor), std::move(kvPages), std::move(stateStorage),
-        std::move(kvPool), std::move(cache), config.maximumImagePatches));
+        std::move(kvTier), std::move(kvPool), std::move(cache),
+        std::move(aneFfn.split), std::move(aneFfn.outcome), hostAvailableAtStart));
+    result->adoptPersistentCache();
     return result;
   } catch (const metal::MetalAllocationError &error) {
     throw RuntimeResourcesError(RuntimeResourceStage::StorageAllocation,
-                                error.what(), memoryPlan.toStatusJson(),
+                                error.what(),
                                 memoryPlan.breakdown().describe(),
                                 resourceAllocationFailure(error.failure()));
   } catch (const std::exception &error) {
     throw RuntimeResourcesError(RuntimeResourceStage::StorageAllocation,
-                                error.what(), memoryPlan.toStatusJson(),
+                                error.what(),
                                 memoryPlan.breakdown().describe());
   }
 }
 
+RuntimeResources::~RuntimeResources() {
+  stopProbation();
+  if (persistentCache_.directory) {
+    persistentCache_.kv->seal();
+    persistentCache_.states->seal();
+  }
+}
+
+void RuntimeResources::adoptPersistentCache() {
+  if (!persistentCache_.directory)
+    return;
+  CacheDirectory &directory = *persistentCache_.directory;
+  if (!directory.coldReason().empty())
+    logLine("Persistent cache emptied: ", directory.coldReason(), ".");
+  std::vector<PersistedKv> blocks;
+  for (const model::SlotRecord &record : persistentCache_.kv->records())
+    blocks.push_back({record.label, [this, record] { return kvTier_->adopt(record); }});
+  std::vector<PersistedState> states;
+  for (const model::SlotRecord &record : persistentCache_.states->records())
+    states.push_back({record.label, [this, record](uint32_t tokens) {
+                        return stateStorage_->adopt(record, tokens);
+                      }});
+  const CacheAdoption adoption = cache_->adopt(std::move(blocks), std::move(states));
+  persistentCache_.kv->finishAdoption();
+  persistentCache_.states->finishAdoption();
+  logLine("Persistent cache ", directory.path().string(), ": took back ", adoption.states,
+          " restore points over ", adoption.blocks, " KV blocks (", adoption.bytes / kMiB,
+          " MiB); left ", adoption.dropped, " copies behind.",
+          directory.uncleanExit()
+              ? " The last process did not stop cleanly: this one serves on probation for "
+                "its first minute."
+              : "");
+}
+
+void RuntimeResources::beginServing() {
+  CacheDirectory *directory = persistentCache_.directory.get();
+  if (!directory)
+    return;
+  const bool probation = directory->uncleanExit();
+  try {
+    directory->beginServing(probation);
+  } catch (const std::exception &error) {
+    logLine("Persistent cache cannot mark this process serving (", error.what(),
+            "); the next start will not know how it ended.");
+    return;
+  }
+  if (!probation)
+    return;
+  probation_ = std::thread([this, directory] {
+    std::unique_lock lock(probationMutex_);
+    if (probationWake_.wait_until(lock, AwakeClock::now() + kProbation,
+                                  [this] { return probationStopped_; }))
+      return;
+    try {
+      directory->endProbation();
+    } catch (const std::exception &error) {
+      logLine("Persistent cache probation did not end (", error.what(), ").");
+    }
+  });
+}
+
+void RuntimeResources::stopProbation() noexcept {
+  {
+    std::lock_guard lock(probationMutex_);
+    probationStopped_ = true;
+  }
+  probationWake_.notify_all();
+  if (probation_.joinable())
+    probation_.join();
+}
+
+bool RuntimeResources::closePersistentCache() {
+  if (!persistentCache_.directory)
+    return true;
+  stopProbation();
+  cache_->relabelStates();
+  // Each file runs its operations in order: the writes and labels submitted
+  // before land first.
+  const auto kv = persistentCache_.kv->synchronize({});
+  const auto states = persistentCache_.states->synchronize({});
+  const bool kvSynchronized = kv->wait();
+  if (!states->wait() || !kvSynchronized)
+    return false;
+  try {
+    persistentCache_.directory->close();
+  } catch (const std::exception &) {
+    return false;
+  }
+  return true;
+}
+
 model::RuntimeContext RuntimeResources::modelContext() noexcept {
-  const EngineMemoryBreakdown &budget = memoryPlan_.breakdown();
   return {
       *backend_,
-      memoryGovernor_->allocationAdmission(),
       model_,
       *kvPages_,
       *stateStorage_,
       operators_,
-      maximumImagePatches_,
-      budget.pipelineReserveBytes,
-      budget.runtimeOverheadReserveBytes,
+      aneFfn_.get(),
       // The plan carries the restricted draft head exactly when it fit.
-      budget.draftWeightsBytes > model_.draft.actualAllocatedBytes,
+      memoryPlan_.breakdown().draftWeightsBytes > model_.draft.actualAllocatedBytes,
   };
 }
 
+AneFfnSnapshot RuntimeResources::aneFfnSnapshot() const {
+  if (!aneFfn_)
+    return {.reason = aneFfnOutcome_.reason};
+  const bool stopped = aneFfn_->retired();
+  const ops::AneFfn::Served &served = aneFfn_->served();
+  return {stopped ? AneFfnSnapshot::State::Stopped : AneFfnSnapshot::State::Split,
+          stopped ? aneFfn_->reason() : aneFfnOutcome_.reason,
+          aneFfn_->share(),
+          aneFfn_->minimumRows(),
+          served.commands,
+          served.evaluations,
+          served.milliseconds};
+}
+
 ActualMemoryReport RuntimeResources::actualMemoryReport(
-    const model::ModelMemoryActual &modelMemory,
-    uint64_t estimatedWarmupPeakBytes) const {
+    const model::ModelMemoryActual &modelMemory) const {
   ActualMemoryReport report;
   report.targetWeightsBytes = model_.targetActualAllocatedBytes();
   report.draftWeightsBytes =
       model_.draft.actualAllocatedBytes + modelMemory.draftHeadActualAllocatedBytes;
   report.visionWeightsBytes = model_.vision.actualAllocatedBytes;
-  report.stateResidentBytes = modelMemory.stateActualAllocatedBytes;
+  report.stateAllocatedBytes = modelMemory.stateActualAllocatedBytes;
   report.sharedPrefillBytes = modelMemory.sharedPrefillActualAllocatedBytes;
   report.sharedDecodeBytes = modelMemory.sharedDecodeActualAllocatedBytes;
-  report.kvResidentBytes = kvPages_->actualAllocatedBytes();
-  // Optional warmup may end with a rolled-back allocation and no subsequent
-  // command. Refresh current residency after that rollback; peaks stay intact.
-  metal::MetalMemoryStats memory = backend_->refreshMemoryStats();
-  if (memory.sparseResidentBytes >
-      std::numeric_limits<uint64_t>::max() - memory.allocatedBytes) {
-    throw std::overflow_error("backend memory accounting overflows");
+  if (kvPool_->allocatedBytes() != kvPages_->actualAllocatedBytes()) {
+    throw std::logic_error("the KV pool and its storage disagree on allocated extents");
   }
-  report.backendAllocatedBytes =
-      memory.allocatedBytes + memory.sparseResidentBytes;
+  report.kvAllocatedBytes = kvPool_->allocatedBytes();
+  report.stateStagingBytes = modelMemory.stateStagingBytes;
+  report.aneFfnBytes = aneFfn_ ? aneFfn_->allocatedBytes() : 0;
+  // Optional warmup may end with a rolled-back allocation and no subsequent
+  // command. Refresh the current counts after that rollback; peaks stay intact.
+  metal::MetalMemoryStats memory = backend_->refreshMemoryStats();
+  report.backendAllocatedBytes = memory.allocatedBytes;
   report.deviceCurrentAllocatedBytes = memory.deviceCurrentAllocatedBytes;
   report.devicePeakAllocatedBytes = memory.devicePeakAllocatedBytes;
   // A capacity-limited warmup can roll back a partial allocation before it
-  // returns a result. Preserve that tracked high-water mark independently of
-  // the device-wide measurement used by the audit.
-  const auto &budget = memoryPlan_.breakdown();
-  const uint64_t reserves =
-      budget.pipelineReserveBytes + budget.runtimeOverheadReserveBytes;
-  if (memory.peakResidentBytes >
-      std::numeric_limits<uint64_t>::max() - reserves) {
-    throw std::overflow_error("warmup memory estimate overflows");
-  }
-  report.estimatedWarmupPeakBytes =
-      std::max(estimatedWarmupPeakBytes, memory.peakResidentBytes + reserves);
+  // returns a result; the backend's own high-water mark keeps it.
+  report.backendPeakAllocatedBytes = memory.peakAllocatedBytes;
   return report;
+}
+
+AneFfnModel aneFfnModel(metal::MetalBackend &backend, const model::LoadedModel &loaded,
+                        const ops::ExecutionPlans &operators, kv::Format format, std::string_view buildId,
+                        std::function<bool()> cancelled) {
+  auto layers = std::make_shared<const std::vector<ops::SwiGluProjections>>(model::aneFfnLayers(loaded));
+  AneFfnModel model;
+  model.dense = !layers->empty();
+  if (!model.dense) return model;
+  if (const char *reason = ops::AneFfn::unsupported(*layers)) {
+    model.unsupported = reason;
+    return model;
+  }
+  model.unavailable = [] { return ane::unavailable(); };
+  model.units = ops::AneFfn::units(*layers);
+  model.plannedBytes = [layers](uint32_t aneUnits) { return ops::AneFfn::plannedBytes(*layers, aneUnits); };
+  const auto onArena = [&backend, &loaded, &operators, format](const auto &use) {
+    model::withPrefillArena(backend, loaded, operators, format, use);
+  };
+  model.time = [&backend, layers, cancelled, onArena] {
+    ops::ane_ffn::Timings timings;
+    onArena([&](const ops::PrefillFfnBuffers &ffn, const std::array<metal::MetalBuffer, 2> &hidden) {
+      timings = ops::ane_ffn::Measurement(backend, *layers, ffn, hidden, cancelled).time();
+    });
+    return timings;
+  };
+  model.prepare = [&backend, layers, cancelled, onArena](uint32_t aneUnits, bool timeChunks) {
+    AneFfnPrepared prepared;
+    onArena([&](const ops::PrefillFfnBuffers &ffn, const std::array<metal::MetalBuffer, 2> &hidden) {
+      prepared.split = std::make_unique<ops::AneFfn>(backend, *layers, aneUnits, cancelled);
+      prepared.error = prepared.split->verify(*layers, ffn, hidden);
+      if (timeChunks)
+        prepared.chunks =
+            ops::ane_ffn::Measurement(backend, *layers, ffn, hidden, cancelled).chunks(*prepared.split);
+    });
+    return prepared;
+  };
+  const std::string key = calibrationKey(*layers) + " device " + backend.capabilities().deviceName + " macos " +
+                          [[NSProcessInfo processInfo] operatingSystemVersionString].UTF8String + " build " +
+                          std::string(buildId) + " most ";
+  model.recall = [key](uint32_t maxAneUnits) -> std::optional<ops::ane_ffn::Calibration> {
+    const std::optional<std::string> line = ane::recall(key + std::to_string(maxAneUnits));
+    return line ? ops::ane_ffn::Calibration::parse(*line) : std::nullopt;
+  };
+  model.remember = [key](uint32_t maxAneUnits, const ops::ane_ffn::Calibration &calibration) {
+    ane::remember(key + std::to_string(maxAneUnits), calibration.text());
+  };
+  model.forget = [key](uint32_t maxAneUnits) { ane::forget(key + std::to_string(maxAneUnits)); };
+  model.healthy = [&backend] { return backend.healthy(); };
+  return model;
+}
+
+void connectToGovernor(EngineConfig &config, MemoryGovernor &governor) {
+  config.growthPaused = [&governor] {
+    return !governor.snapshot().hostGrowthAllowed;
+  };
+  config.serving = [&governor](bool serving) { governor.setServing(serving); };
 }
 
 } // namespace splash::engine

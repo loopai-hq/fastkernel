@@ -1,5 +1,6 @@
 #include "../../../runtime/metal/MetalBackend.hpp"
 #include "metal/abi/Linear.h"
+#include "ops/Linear.hpp"
 
 #import <Foundation/Foundation.h>
 
@@ -90,12 +91,12 @@ void runShape(MetalBackend &backend, const ProjectionShape &shape,
     gatePtr[index] = __bf16(inputValues(random));
   }
 
-  const Q4PrefillParams params{shape.outputSize, shape.inputSize};
+  const Q4Params params{shape.outputSize, shape.inputSize};
   {
     ComputeDispatch sum;
     sum.pipelineName = "prefill_linear_q4_sums32";
     sum.buffers = {{0, input}, {1, sums}};
-    sum.bytes = {{2, &params, sizeof(params)}};
+    sum.bytes = {{2, &shape.inputSize, sizeof(shape.inputSize)}};
     sum.threadgroups = {rowTiles, 1, 1};
     sum.threadsPerThreadgroup = {256, 1, 1};
     (void)backend.submit(sum);
@@ -225,6 +226,83 @@ void runShape(MetalBackend &backend, const ProjectionShape &shape,
   }
 }
 
+// A view of the leading inputs of wider weight rows, as the ANE FFN split runs
+// down's GPU share: each residual kernel's leading-input instance over it
+// equals bit for bit that kernel over those inputs copied out of each
+// 256-column weight tile on their own.
+void runLeadingInputs(MetalBackend &backend, std::mt19937 &random) {
+  constexpr uint32_t rows = 176, outputs = 2048, wide = 2048, inputs = 1024, columnTile = 256;
+  const uint32_t rowTiles = (rows + kTileRows - 1) / kTileRows, storage = rowTiles * kTileRows;
+  const uint32_t tiles = outputs / columnTile, wideGroups = wide / kQuantGroup, groups = inputs / kQuantGroup;
+  std::uniform_real_distribution<float> values(-1.0f, 1.0f), parameters(-0.02f, 0.02f);
+  const auto filled = [&](uint64_t count, auto make, const char *label) {
+    MetalBuffer buffer = shared(backend, count * sizeof(make()), label);
+    auto *data = static_cast<decltype(make()) *>(buffer.contents());
+    for (uint64_t index = 0; index < count; ++index) data[index] = make();
+    return buffer;
+  };
+  const auto bf16 = [&] { return __bf16(values(random)); };
+  MetalBuffer input = filled(uint64_t{storage} * inputs, bf16, "leading-input");
+  MetalBuffer residual = filled(uint64_t{storage} * outputs, bf16, "leading-residual");
+  MetalBuffer weights = filled(uint64_t{outputs} * wide / 2, [&] { return uint8_t(random()); }, "leading-weights");
+  const uint64_t wideParameters = uint64_t{outputs} * wideGroups;
+  MetalBuffer scales = filled(wideParameters, [&] { return __bf16(parameters(random)); }, "leading-scales");
+  MetalBuffer biases = filled(wideParameters, [&] { return __bf16(parameters(random)); }, "leading-biases");
+  // Each 256-column tile holds its groups in order: copy the first `groups`.
+  const auto leading = [&](const MetalBuffer &source, uint64_t groupBytes, const char *label) {
+    MetalBuffer copy = shared(backend, uint64_t{tiles} * groups * groupBytes, label);
+    for (uint32_t tile = 0; tile < tiles; ++tile)
+      std::memcpy(static_cast<uint8_t *>(copy.contents()) + uint64_t{tile} * groups * groupBytes,
+                  static_cast<const uint8_t *>(source.contents()) + uint64_t{tile} * wideGroups * groupBytes,
+                  uint64_t{groups} * groupBytes);
+    return copy;
+  };
+  const MetalBuffer compactWeights = leading(weights, columnTile * kQuantGroup / 2, "leading-compact-weights");
+  const MetalBuffer compactScales = leading(scales, columnTile * sizeof(__bf16), "leading-compact-scales");
+  const MetalBuffer compactBiases = leading(biases, columnTile * sizeof(__bf16), "leading-compact-biases");
+  const Q4Params compact{outputs, inputs};
+  const Q4PrefillLeadingParams view{{outputs, inputs}, wide};
+  MetalBuffer sums = shared(backend, uint64_t{storage} * groups * sizeof(float), "leading-sums");
+  {
+    ComputeDispatch sum;
+    sum.pipelineName = "prefill_linear_q4_sums32";
+    sum.buffers = {{0, input}, {1, sums}};
+    sum.bytes = {{2, &inputs, sizeof(inputs)}};
+    sum.threadgroups = {rowTiles, 1, 1};
+    sum.threadsPerThreadgroup = {256, 1, 1};
+    (void)backend.submit(sum);
+  }
+  const uint64_t outputBytes = uint64_t{storage} * outputs * sizeof(__bf16);
+  struct Kernel {
+    const char *pipeline;
+    uint32_t tileColumns, threads;
+  };
+  for (const Kernel kernel : std::vector<Kernel>{{"prefill_linear_q4_n256_residual", 256, 256},
+                                                 {"prefill_linear_q4_n128_residual", 128, 256},
+                                                 {"prefill_linear_q4_n128_residual_sg4", 128, 128}}) {
+    const auto run = [&](const std::string &pipeline, const MetalBuffer &w, const MetalBuffer &s,
+                         const MetalBuffer &b, const void *params, size_t paramBytes) {
+      MetalBuffer output = shared(backend, outputBytes, kernel.pipeline);
+      std::memset(output.contents(), 0xA5, outputBytes);
+      ComputeDispatch dispatch;
+      dispatch.pipelineName = pipeline;
+      dispatch.buffers = {{0, input}, {1, w}, {2, s}, {3, b}, {4, residual}, {5, output}, {6, sums}};
+      dispatch.bytes = {{7, params, paramBytes}};
+      dispatch.threadgroups = {rowTiles, outputs / kernel.tileColumns, 1};
+      dispatch.threadsPerThreadgroup = {kernel.threads, 1, 1};
+      (void)backend.submit(dispatch);
+      return output;
+    };
+    const std::string instance = splash::ops::leadingInputsInstance(kernel.pipeline);
+    const MetalBuffer expected =
+        run(kernel.pipeline, compactWeights, compactScales, compactBiases, &compact, sizeof(compact));
+    const MetalBuffer got = run(instance, weights, scales, biases, &view, sizeof(view));
+    if (std::memcmp(expected.contents(), got.contents(), outputBytes))
+      fail(instance + " over a view of leading inputs differs from " + kernel.pipeline + " over them copied");
+    std::cout << "PASS q4 prefill " << instance << " " << inputs << " of " << wide << " inputs exact=true\n";
+  }
+}
+
 // A 32-row prefill chunk and the decode M32 kernels cover the same rows with
 // different grid strategies (matrix grid vs persistent groups). Pin the shared
 // accumulation-order claim across the phase boundary: both routes must
@@ -269,12 +347,12 @@ void runDecodeCrossCheck(MetalBackend &backend, std::mt19937 &random) {
   for (uint64_t index = 0; index < outputElements; ++index)
     residualPtr[index] = __bf16(inputValues(random));
 
-  const Q4PrefillParams prefillParams{shape.outputSize, shape.inputSize};
+  const Q4Params prefillParams{shape.outputSize, shape.inputSize};
   {
     ComputeDispatch sum;
     sum.pipelineName = "prefill_linear_q4_sums32";
     sum.buffers = {{0, input}, {1, sums}};
-    sum.bytes = {{2, &prefillParams, sizeof(prefillParams)}};
+    sum.bytes = {{2, &shape.inputSize, sizeof(shape.inputSize)}};
     sum.threadgroups = {1, 1, 1};
     sum.threadsPerThreadgroup = {256, 1, 1};
     (void)backend.submit(sum);
@@ -300,7 +378,7 @@ void runDecodeCrossCheck(MetalBackend &backend, std::mt19937 &random) {
   };
   const auto runDecodePlain = [&](const char *pipeline, uint32_t groups,
                                   MetalBuffer output) {
-    const Q4Params decodeParams{shape.outputSize, shape.inputSize, groups};
+    const Q4PersistentParams decodeParams{shape.outputSize, shape.inputSize, groups};
     ComputeDispatch decode;
     decode.pipelineName = pipeline;
     decode.buffers = {{0, input}, {1, weights}, {2, scales}, {3, biases},
@@ -359,14 +437,14 @@ void runDecodeCrossCheck(MetalBackend &backend, std::mt19937 &random) {
     (void)backend.submit(up);
 
     MetalBuffer decodeOut = freshOutput("q4-cross-up-decode");
-    const Q4Params decodeParams{shape.outputSize, shape.inputSize,
-                                shape.outputSize / 256};
+    const Q4PersistentParams decodeParams{shape.outputSize, shape.inputSize,
+                                          shape.outputSize / 256};
     ComputeDispatch upDecode;
     upDecode.pipelineName = "decode_linear_q4_n256_up_silu_m32";
     upDecode.buffers = {{0, input}, {1, weights}, {2, scales}, {3, biases},
                         {4, gateScratchB}, {5, decodeOut}};
     upDecode.bytes = {{6, &decodeParams, sizeof(decodeParams)}};
-    upDecode.threadgroups = {decodeParams.persistent_groups, 1, 1};
+    upDecode.threadgroups = {decodeParams.groups, 1, 1};
     upDecode.threadsPerThreadgroup = {256, 1, 1};
     (void)backend.submit(upDecode);
 
@@ -392,14 +470,14 @@ void runDecodeCrossCheck(MetalBackend &backend, std::mt19937 &random) {
     (void)backend.submit(prefill);
 
     MetalBuffer decodeOut = freshOutput("q4-cross-decode-residual");
-    const Q4Params decodeParams{shape.outputSize, shape.inputSize,
-                                shape.outputSize / 128};
+    const Q4PersistentParams decodeParams{shape.outputSize, shape.inputSize,
+                                          shape.outputSize / 128};
     ComputeDispatch decode;
     decode.pipelineName = "decode_linear_q4_n128_residual_m32";
     decode.buffers = {{0, input}, {1, weights}, {2, scales}, {3, biases},
                       {4, residual}, {5, decodeOut}};
     decode.bytes = {{6, &decodeParams, sizeof(decodeParams)}};
-    decode.threadgroups = {decodeParams.persistent_groups, 1, 1};
+    decode.threadgroups = {decodeParams.groups, 1, 1};
     decode.threadsPerThreadgroup = {256, 1, 1};
     (void)backend.submit(decode);
 
@@ -423,6 +501,7 @@ void run(const std::string &metallibPath) {
            {1, 2048, 2048}, {31, 2048, 2048}, {33, 2048, 2048}, {176, 2048, 2048},
            {64, 6144, 5120}, {256, 5120, 14336}, {2048, 17408, 5120}})
     runShape(backend, shape, random);
+  runLeadingInputs(backend, random);
   runDecodeCrossCheck(backend, random);
 }
 

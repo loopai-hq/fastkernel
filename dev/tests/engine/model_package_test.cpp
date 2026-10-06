@@ -1,8 +1,14 @@
+#include "TestBuffers.hpp"
+#include "TestChecks.hpp"
+#include "TestPackage.hpp"
+#include "model/GgufImageLayout.hpp"
 #include "model/ModelFactory.hpp"
+#include "model/WeightImages.hpp"
+#include "model/WeightLayout.hpp"
+#include "ops/Embedding.hpp"
 
 #include <algorithm>
 #include <array>
-#include <cerrno>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -14,40 +20,41 @@
 #include <span>
 #include <string>
 #include <system_error>
+#include <tuple>
 #include <utility>
 #include <variant>
 #include <vector>
 
 #include <fcntl.h>
-#include <mach/mach.h>
-#include <mach/mach_vm.h>
-#include <sys/mman.h>
 #include <unistd.h>
 
 namespace {
 
 using splash::model::DFlashDraftLayout;
+using splash::model::ModelDescriptor;
 using splash::model::WeightFile;
 using splash::model::WeightFileRecord;
-using splash::model::WeightStoreError;
 using splash::model::QwenAttentionWeights;
 using splash::model::QwenGdnWeights;
 using splash::model::Qwen3_8Layout;
 using splash::model::Qwen3_8Weights;
+using splash::model::TargetSource;
+using splash::model::VisionSource;
 using splash::ops::VisionLayout;
 using splash::model::kWeightFileAlignment;
-using splash::model::loadModelPackage;
+using splash::model::loadModel;
 using splash::model::makeModelDescriptor;
 using splash::model::weightManifestFingerprint;
 using splash::metal::BufferStorage;
 using splash::metal::MetalBackend;
 using splash::metal::MetalBuffer;
+using splash::test::SyntheticAccounting;
+using splash::test::rejects;
+using splash::test::sharedBuffer;
+using splash::test::writeSyntheticPackage;
+using splash::test::writeWeightFile;
 
-constexpr std::string_view kDraftLayerMagic = "MDFD0004";
-constexpr std::string_view kTargetEmbeddingMagic = "MDFE0001";
-constexpr std::string_view kTargetHeadMagic = "MDFL0002";
-constexpr std::string_view kTargetLayerMagic = "MDFL0006";
-constexpr std::string_view kVisionMagic = "MDFV0001";
+constexpr std::string_view kGgufImageMagic = "MDGG0001";
 
 [[noreturn]] void fail(const std::string &message) {
     std::cerr << "FAIL: " << message << '\n';
@@ -67,32 +74,6 @@ void testStartupCapabilities() {
                 ExecutionLimits::targetVerifyRows == 8 &&
                 ExecutionLimits::draftContextTokens == 2048,
             "DFlash execution contract changed");
-}
-
-template <typename Function>
-void requirePackedError(Function &&function, const std::string &message) {
-    try {
-        function();
-    } catch (const WeightStoreError &) {
-        return;
-    }
-    fail(message);
-}
-
-uint64_t alignPacked(uint64_t value) {
-    return (value + kWeightFileAlignment - 1) &
-        ~(kWeightFileAlignment - 1);
-}
-
-uint64_t checkedProduct(uint64_t left, uint64_t right) {
-    if (left && right > std::numeric_limits<uint64_t>::max() / left) {
-        fail("synthetic layout size overflow");
-    }
-    return left * right;
-}
-
-uint64_t q4Bytes(uint32_t outputSize, uint32_t inputSize) {
-    return checkedProduct(outputSize, inputSize) * 9 / 16;
 }
 
 uint64_t declaredBytes(std::span<const WeightFileRecord> records) {
@@ -126,218 +107,11 @@ private:
     std::filesystem::path path_;
 };
 
-void storeLittleEndian32(uint8_t *destination, uint32_t value) {
-    destination[0] = static_cast<uint8_t>(value);
-    destination[1] = static_cast<uint8_t>(value >> 8);
-    destination[2] = static_cast<uint8_t>(value >> 16);
-    destination[3] = static_cast<uint8_t>(value >> 24);
-}
-
-uint64_t writeWeightFile(const std::filesystem::path &path,
-                         std::string_view magic, uint32_t layer,
-                         uint32_t type,
-                         std::span<const uint64_t> sections) {
-    require(magic.size() == 8, "synthetic magic has the wrong size");
-    std::filesystem::create_directories(path.parent_path());
-    int descriptor = open(path.c_str(), O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC,
-                          0600);
-    if (descriptor < 0) fail("unable to create synthetic packed file");
-
-    std::array<uint8_t, 16> header{};
-    std::memcpy(header.data(), magic.data(), magic.size());
-    storeLittleEndian32(header.data() + 8, layer);
-    storeLittleEndian32(header.data() + 12, type);
-    ssize_t written = pwrite(descriptor, header.data(), header.size(), 0);
-    if (written != static_cast<ssize_t>(header.size())) {
-        close(descriptor);
-        fail("unable to write synthetic packed header");
-    }
-
-    uint64_t offset = header.size();
-    for (uint64_t bytes : sections) {
-        require(bytes > 0, "synthetic section is empty");
-        offset = alignPacked(offset) + bytes;
-    }
-    uint64_t fileBytes = alignPacked(offset);
-    if (fileBytes > static_cast<uint64_t>(
-                        std::numeric_limits<off_t>::max()) ||
-        ftruncate(descriptor, static_cast<off_t>(fileBytes)) != 0) {
-        close(descriptor);
-        fail("unable to size synthetic packed file");
-    }
-    close(descriptor);
-    return fileBytes;
-}
-
-std::vector<uint64_t> targetLayerSections(
-    const Qwen3_8Layout &layout, bool full) {
-    constexpr uint64_t bf16 = 2;
-    std::vector<uint64_t> result{
-        uint64_t(layout.hiddenSize) * bf16,
-        q4Bytes(full ? layout.packedFullWidth : layout.packedGdnWidth,
-                layout.hiddenSize),
-    };
-    if (full) {
-        result.insert(result.end(), {
-            uint64_t(layout.attentionHeadDimension) * bf16,
-            uint64_t(layout.attentionHeadDimension) * bf16,
-            q4Bytes(layout.hiddenSize, layout.attentionWidth),
-        });
-    } else {
-        result.insert(result.end(), {
-            uint64_t(layout.convolutionDimension) * 4 * bf16,
-            uint64_t(layout.gdnValueHeads) * 4,
-            uint64_t(layout.gdnValueHeads) * bf16,
-            uint64_t(layout.gdnHeadDimension) * bf16,
-            q4Bytes(layout.hiddenSize, layout.attentionWidth),
-        });
-    }
-    result.insert(result.end(), {
-        uint64_t(layout.hiddenSize) * bf16,
-        q4Bytes(layout.intermediateSize, layout.hiddenSize),
-        q4Bytes(layout.intermediateSize, layout.hiddenSize),
-        q4Bytes(layout.hiddenSize, layout.intermediateSize),
-    });
-    return result;
-}
-
-std::vector<uint64_t> draftLayerSections(const DFlashDraftLayout &layout) {
-    constexpr uint64_t bf16 = 2;
-    return {
-        uint64_t(layout.hiddenSize) * bf16,
-        uint64_t(4) * layout.hiddenSize * bf16,
-        q4Bytes(layout.dynamicSize, layout.hiddenSize),
-        q4Bytes(layout.qkvSize, layout.hiddenSize),
-        uint64_t(layout.attentionHeadDimension) * bf16,
-        uint64_t(layout.attentionHeadDimension) * bf16,
-        q4Bytes(layout.hiddenSize, layout.attentionSize),
-        uint64_t(layout.hiddenSize) * bf16,
-        uint64_t(4) * layout.hiddenSize * bf16,
-        q4Bytes(layout.dynamicSize, layout.hiddenSize),
-        q4Bytes(layout.intermediateSize, layout.hiddenSize),
-        q4Bytes(layout.intermediateSize, layout.hiddenSize),
-        q4Bytes(layout.hiddenSize, layout.intermediateSize),
-    };
-}
-
-std::vector<uint64_t> visionSections(const VisionLayout &layout) {
-    constexpr uint64_t bf16 = 2;
-    auto affine = [&](uint64_t outputSize, uint64_t inputSize,
-                      std::vector<uint64_t> &sections) {
-        sections.push_back(outputSize * inputSize * bf16);
-        sections.push_back(outputSize * bf16);
-    };
-    auto norm = [&](std::vector<uint64_t> &sections) {
-        sections.push_back(uint64_t(layout.hiddenSize) * bf16);
-        sections.push_back(uint64_t(layout.hiddenSize) * bf16);
-    };
-    std::vector<uint64_t> result;
-    affine(layout.hiddenSize, layout.patchDimension, result);
-    result.push_back(uint64_t(layout.positionGridSide) *
-                     layout.positionGridSide * layout.hiddenSize * bf16);
-    for (uint32_t block = 0; block < layout.depth; ++block) {
-        norm(result);
-        affine(uint64_t(3) * layout.hiddenSize, layout.hiddenSize, result);
-        affine(layout.hiddenSize, layout.hiddenSize, result);
-        norm(result);
-        affine(layout.paddedIntermediateSize, layout.hiddenSize, result);
-        affine(layout.hiddenSize, layout.paddedIntermediateSize, result);
-    }
-    norm(result);
-    affine(layout.mergedHiddenSize, layout.mergedHiddenSize, result);
-    affine(layout.outputHiddenSize, layout.mergedHiddenSize, result);
-    return result;
-}
-
-struct SyntheticAccounting {
-    uint64_t targetBytes = 0;
-    uint64_t draftBytes = 0;
-    uint64_t visionBytes = 0;
-};
-
-SyntheticAccounting writeSyntheticPackage(
-    const std::filesystem::path &root, const Qwen3_8Layout &target,
-    const DFlashDraftLayout &draft, const VisionLayout &vision) {
-    SyntheticAccounting result;
-    for (uint32_t layer = 0; layer < target.layers; ++layer) {
-        bool full = target.isFullAttentionLayer(layer);
-        auto sections = targetLayerSections(target, full);
-        result.targetBytes += writeWeightFile(
-            root / "target" / ("layer-" + std::to_string(layer) + ".bin"),
-            kTargetLayerMagic, layer, full ? 1U : 0U, sections);
-    }
-    std::array<uint64_t, 2> headSections{
-        uint64_t(target.hiddenSize) * 2,
-        q4Bytes(target.vocabularySize, target.hiddenSize),
-    };
-    result.targetBytes += writeWeightFile(
-        root / "target/head.bin", kTargetHeadMagic, target.layers, 2,
-        headSections);
-    uint64_t embeddingElements =
-        uint64_t(target.vocabularySize) * target.hiddenSize;
-    std::array<uint64_t, 3> embeddingSections{
-        embeddingElements / 2,
-        embeddingElements / 32,
-        embeddingElements / 32,
-    };
-    result.targetBytes += writeWeightFile(
-        root / "target/embedding.bin", kTargetEmbeddingMagic,
-        target.vocabularySize, target.hiddenSize, embeddingSections);
-
-    for (uint32_t layer = 0; layer < draft.layers; ++layer) {
-        auto sections = draftLayerSections(draft);
-        result.draftBytes += writeWeightFile(
-            root / "draft" / ("layer-" + std::to_string(layer) + ".bin"),
-            kDraftLayerMagic, layer, 0, sections);
-    }
-    uint64_t codebookBytes =
-        uint64_t(draft.vocabularySize) * draft.selectorRank * 2;
-    std::array<uint64_t, 6> modelSections{
-        q4Bytes(draft.hiddenSize, draft.targetHiddenSize),
-        uint64_t(draft.hiddenSize) * 2,
-        uint64_t(draft.hiddenSize) * 2,
-        q4Bytes(draft.selectorRank, draft.hiddenSize),
-        codebookBytes,
-        codebookBytes,
-    };
-    result.draftBytes += writeWeightFile(
-        root / "draft/model.bin", kDraftLayerMagic, draft.layers, 1,
-        modelSections);
-    auto sections = visionSections(vision);
-    result.visionBytes += writeWeightFile(
-        root / "vision/model.bin", kVisionMagic, vision.depth, 0, sections);
-    return result;
-}
-
-bool addressIsMapped(void *address) {
-    long pageSize = sysconf(_SC_PAGESIZE);
-    if (pageSize <= 0) fail("unable to determine page size");
-    char state = 0;
-    errno = 0;
-    return mincore(address, static_cast<size_t>(pageSize), &state) == 0;
-}
-
-void requireCleanFileMapping(void *pointer) {
-    mach_vm_address_t address = reinterpret_cast<mach_vm_address_t>(pointer);
-    mach_vm_size_t size = 0;
-    natural_t depth = 0;
-    vm_region_submap_info_data_64_t info{};
-    mach_msg_type_number_t count = VM_REGION_SUBMAP_INFO_COUNT_64;
-    require(mach_vm_region_recurse(
-                mach_task_self(), &address, &size, &depth,
-                reinterpret_cast<vm_region_recurse_info_t>(&info), &count) ==
-                KERN_SUCCESS && address <= reinterpret_cast<uintptr_t>(pointer) &&
-                reinterpret_cast<uintptr_t>(pointer) - address < size,
-            "unable to inspect weight mapping");
-    require(info.protection == VM_PROT_READ,
-            "weight mapping is not read-only");
-    require(info.external_pager && info.shadow_depth == 0 &&
-                info.pages_dirtied == 0 && info.pages_swapped_out == 0,
-            "GPU read turned file-backed weights into private dirty pages");
-}
-
-void testWeightFileValidationAndLifetime(MetalBackend &backend,
-                                         const std::filesystem::path &root) {
+// A package file loaded into an image: its sections are aligned views the GPU
+// reads and its memory is tracked; once released, a command that binds it
+// fails until a restore reads the file again, which fails once the file was
+// written.
+void testWeightImages(MetalBackend &backend, const std::filesystem::path &root) {
     constexpr uint32_t elementCount = kWeightFileAlignment / sizeof(uint32_t);
     std::array<uint32_t, elementCount> expected{};
     for (uint32_t i = 0; i < elementCount; ++i) expected[i] = i * 17 + 3;
@@ -346,123 +120,187 @@ void testWeightFileValidationAndLifetime(MetalBackend &backend,
     uint64_t fileBytes = writeWeightFile(
         validPath, "TEST0001", 7, 9, sections);
     int descriptor = open(validPath.c_str(), O_WRONLY | O_CLOEXEC);
-    require(descriptor >= 0, "unable to open synthetic payload");
-    require(pwrite(descriptor, expected.data(), sizeof(expected),
-                   kWeightFileAlignment) == static_cast<ssize_t>(sizeof(expected)) &&
-                fsync(descriptor) == 0,
-            "unable to persist synthetic payload before mapping");
+    require(descriptor >= 0 &&
+                pwrite(descriptor, expected.data(), sizeof(expected),
+                       kWeightFileAlignment) == static_cast<ssize_t>(sizeof(expected)),
+            "unable to write the synthetic payload");
     close(descriptor);
-    uint64_t baseline = backend.memoryStats().allocatedBytes;
+    MetalBuffer output = backend.allocateBuffer(
+        sizeof(expected), BufferStorage::Shared, "weight-readback");
+    const uint64_t baseline = backend.memoryStats().allocatedBytes;
     MetalBuffer retained;
-    void *mappedAddress = nullptr;
-    {
-        WeightFile file(
-            backend, validPath, "test/valid.bin", "TEST0001", 7, 9);
-        retained = file.section(sizeof(expected), "payload");
-        mappedAddress = retained.contents();
-        require(mappedAddress != nullptr, "mapped section is not CPU-visible");
-        require(reinterpret_cast<uintptr_t>(mappedAddress) %
-                    kWeightFileAlignment == 0,
-                "mapped section start is not 16 KiB-aligned");
-        file.finish();
-        require(backend.memoryStats().allocatedBytes >= baseline + fileBytes,
-                "zero-copy base allocation was not tracked");
-    }
-    require(addressIsMapped(mappedAddress),
-            "mapping disappeared while a Metal view remained alive");
-    {
-        MetalBuffer output = backend.allocateBuffer(
-            sizeof(expected), BufferStorage::Shared, "weight-readback");
+    const auto readBack = [&] {
         splash::metal::ComputeDispatch dispatch;
         dispatch.pipelineName = "test_copy_u32";
         dispatch.buffers = {{0, retained}, {1, output}};
         dispatch.bytes = {{2, &elementCount, sizeof(elementCount)}};
         dispatch.threadgroups = {(elementCount + 31) / 32, 1, 1};
         dispatch.threadsPerThreadgroup = {32, 1, 1};
+        std::memset(output.contents(), 0, sizeof(expected));
         (void)backend.submit(dispatch);
-        require(std::memcmp(output.contents(), expected.data(), sizeof(expected)) == 0,
-                "GPU read of retained mapped weights was incorrect");
-        requireCleanFileMapping(mappedAddress);
+        return std::memcmp(output.contents(), expected.data(), sizeof(expected)) == 0;
+    };
+    {
+        splash::model::WeightImages images(backend, "fixture");
+        WeightFile file = images.load(
+            splash::model::packageImage(validPath, "test/valid.bin", "TEST0001", 7, 9));
+        retained = file.section(sizeof(expected), "payload");
+        require(retained.contents() != nullptr &&
+                    reinterpret_cast<uintptr_t>(retained.contents()) % kWeightFileAlignment == 0,
+                "an image section is not a 16 KiB-aligned CPU-visible view");
+        file.finish();
+        require(backend.memoryStats().allocatedBytes >= baseline + fileBytes,
+                "an image's memory was not tracked");
+        require(readBack(), "GPU read of an image section was incorrect");
+        images.release();
+        require(!retained.contents() && backend.memoryStats().allocatedBytes == baseline,
+                "released image memory remains");
+        rejects([&] { (void)readBack(); }, "binds released memory", "a command bound released image memory");
+        require(images.restore() && !images.released() &&
+                    backend.memoryStats().allocatedBytes >= baseline + fileBytes && readBack(),
+                "GPU read of a restored image section was incorrect");
+        images.release();
+        descriptor = open(validPath.c_str(), O_WRONLY | O_CLOEXEC);
+        const uint32_t edit = 1;
+        require(descriptor >= 0 &&
+                    pwrite(descriptor, &edit, sizeof(edit), kWeightFileAlignment) == sizeof(edit),
+                "unable to write the loaded file");
+        close(descriptor);
+        rejects([&] { static_cast<void>(images.restore()); }, "written while the model is loaded",
+                "a restore read a file written since it was opened");
     }
     retained = MetalBuffer{};
     require(backend.memoryStats().allocatedBytes == baseline,
-            "released mapped buffer remains in backend accounting");
+            "a released image buffer remains in backend accounting");
 
-    long pageSize = sysconf(_SC_PAGESIZE);
-    require(pageSize > 0, "unable to determine page size");
-    uint64_t ownerBytes = alignPacked(static_cast<uint64_t>(pageSize));
-    void *ownerAddress = mmap(
-        nullptr, static_cast<size_t>(ownerBytes), PROT_READ | PROT_WRITE,
-        MAP_PRIVATE | MAP_ANON, -1, 0);
-    require(ownerAddress != MAP_FAILED,
-            "unable to create shared-memory lifetime test mapping");
-    bool ownerReleased = false;
-    std::shared_ptr<void> owner(
-        ownerAddress, [&](void *address) {
-            ownerReleased =
-                munmap(address, static_cast<size_t>(ownerBytes)) == 0;
-        });
-    MetalBuffer base = backend.wrapSharedMemory(
-        ownerAddress, ownerBytes, owner, "lifetime-owner-test");
-    MetalBuffer ownerView = backend.view(base, 0, 64);
-    owner.reset();
-    base = MetalBuffer{};
-    require(!ownerReleased,
-            "shared-memory owner was released while a view remained alive");
-    ownerView = MetalBuffer{};
-    require(ownerReleased,
-            "shared-memory owner was not released with its final view");
-
-    requirePackedError(
+    const auto load = [&](const std::filesystem::path &path, std::string_view magic, uint32_t layer,
+                          uint32_t type) {
+        splash::model::WeightImages images(backend, "fixture");
+        return images.load(splash::model::packageImage(path, "test/" + path.filename().string(), magic, layer, type));
+    };
+    auto headerPath = root / "header.bin";
+    writeWeightFile(headerPath, "TEST0001", 7, 9, sections);
+    rejects([&] { (void)load(headerPath, "WRONG000", 7, 9); }, "weight image header mismatch",
+            "wrong magic was accepted");
+    rejects([&] { (void)load(headerPath, "TEST0001", 8, 9); }, "weight image header mismatch",
+            "wrong layer was accepted");
+    rejects([&] { (void)load(headerPath, "TEST0001", 7, 8); }, "weight image header mismatch",
+            "wrong type was accepted");
+    rejects(
         [&] {
-            WeightFile wrong(
-                backend, validPath, "test/valid.bin", "WRONG000", 7, 9);
+            WeightFile truncated = load(headerPath, "TEST0001", 7, 9);
+            (void)truncated.section(fileBytes, {});
         },
-        "wrong packed magic was accepted");
-    requirePackedError(
-        [&] {
-            WeightFile wrong(
-                backend, validPath, "test/valid.bin", "TEST0001", 8, 9);
-        },
-        "wrong packed layer was accepted");
-    requirePackedError(
-        [&] {
-            WeightFile wrong(
-                backend, validPath, "test/valid.bin", "TEST0001", 7, 8);
-        },
-        "wrong packed type was accepted");
-    requirePackedError(
-        [&] {
-            WeightFile truncated(
-                backend, validPath, "test/valid.bin", "TEST0001", 7, 9);
-            (void)truncated.section(fileBytes);
-        },
-        "truncated packed section was accepted");
+        "is truncated at section", "truncated section was accepted");
 
     auto extraPath = root / "extra.bin";
     std::array<uint64_t, 2> extraSections{64, 64};
     writeWeightFile(extraPath, "TEST0001", 1, 2, extraSections);
-    requirePackedError(
+    rejects(
         [&] {
-            WeightFile extra(
-                backend, extraPath, "test/extra.bin", "TEST0001", 1, 2);
-            (void)extra.section(64);
+            WeightFile extra = load(extraPath, "TEST0001", 1, 2);
+            (void)extra.section(64, {});
             extra.finish();
         },
-        "unconsumed packed bytes were accepted");
+        "weight image has unconsumed or missing bytes", "unconsumed bytes were accepted");
 
     auto unalignedPath = root / "unaligned.bin";
     writeWeightFile(unalignedPath, "TEST0001", 1, 2, sections);
     require(truncate(unalignedPath.c_str(),
                      static_cast<off_t>(fileBytes - 1)) == 0,
             "unable to truncate synthetic file");
-    requirePackedError(
-        [&] {
-            WeightFile unaligned(
-                backend, unalignedPath, "test/unaligned.bin", "TEST0001",
-                1, 2);
-        },
-        "unaligned packed file size was accepted");
+    rejects([&] { (void)load(unalignedPath, "TEST0001", 1, 2); }, "weight image size is not 16 KiB-aligned",
+            "unaligned file size was accepted");
+}
+
+// One tensor of a GGUF image: its descriptor, then its sections.
+std::filesystem::path writeGgufTensor(const std::filesystem::path &path,
+                                      const splash::model::GgufTensorDescriptor &tensor) {
+    std::vector<uint64_t> sections{splash::model::GgufTensorDescriptor::kBytes};
+    for (uint64_t bytes : {tensor.plane0Bytes, tensor.plane1Bytes, tensor.metaTotalBytes})
+        if (bytes) sections.push_back(bytes);
+    writeWeightFile(path, kGgufImageMagic, 0, 0, sections);
+    const auto descriptor = tensor.encode();
+    int file = open(path.c_str(), O_WRONLY | O_CLOEXEC);
+    require(file >= 0 && pwrite(file, descriptor.data(), descriptor.size(),
+                                kWeightFileAlignment) == static_cast<ssize_t>(descriptor.size()),
+            "unable to write a synthetic GGUF descriptor");
+    close(file);
+    return path;
+}
+
+// GGUF image readers hold a tensor to the sizes the layout expects, and a
+// token gather writes only into buffers holding its rows.
+void testGgufImageLayout(MetalBackend &backend, const std::filesystem::path &root) {
+    constexpr uint32_t rows = 256, columns = 256;
+    // Q8_0 planes and native rows as the planner lays them out.
+    const QuantFormat &q80 = kQuantFormats[GGUF_FMT_Q80];
+    const splash::model::GgufPlaneBytes planes = splash::model::ggufPlaneBytes(q80, rows, columns);
+    const auto projection = writeGgufTensor(root / "projection.bin",
+                                            {.type = q80.ggml_type,
+                                             .outputSize = rows,
+                                             .inputSize = columns,
+                                             .p0 = q80.plane0_bytes,
+                                             .p1 = q80.plane1_bytes,
+                                             .metaBytes = q80.meta_bytes,
+                                             .metaGroups = q80.meta_groups,
+                                             .plane0Bytes = planes.plane0,
+                                             .plane1Bytes = planes.plane1,
+                                             .metaTotalBytes = planes.meta});
+    const auto embedding = writeGgufTensor(root / "embedding.bin",
+                                           {.type = q80.ggml_type,
+                                            .outputSize = rows,
+                                            .inputSize = columns,
+                                            .plane0Bytes = rows * splash::model::ggufRowBytes(q80, columns)});
+    splash::model::WeightImages images(backend, "fixture");
+    const auto loaded = [&](const std::filesystem::path &path) {
+        return images.load(
+            splash::model::packageImage(path, "test/" + path.filename().string(), kGgufImageMagic, 0, 0));
+    };
+    {
+        // finish() proves the reader took exactly the descriptor, plane0 and
+        // meta sections; the segment's format comes from the descriptor.
+        WeightFile file = loaded(projection);
+        const auto read = splash::model::readBlockProjection(file, rows, columns, "projection");
+        file.finish();
+        const auto &segment = read.blocks().segments.at(0);
+        require(segment.formatId == GGUF_FMT_Q80 && !segment.plane1, "GGUF projection did not read a Q8_0 segment");
+    }
+    for (const auto [output, input] : {std::pair{2 * rows, columns}, std::pair{rows, 2 * columns}}) {
+        rejects(
+            [&] {
+                WeightFile file = loaded(projection);
+                (void)splash::model::readBlockProjection(file, output, input, "projection");
+            },
+            "GGUF tensor does not match the layout",
+            "GGUF projection of other sizes than the layout's was accepted");
+        rejects(
+            [&] {
+                WeightFile file = loaded(embedding);
+                (void)splash::model::readBlockEmbedding(file, output, input, "embedding");
+            },
+            "GGUF embedding does not match the layout",
+            "GGUF embedding of other sizes than the layout's was accepted");
+    }
+    WeightFile file = loaded(embedding);
+    const auto table = splash::model::readBlockEmbedding(file, rows, columns, "embedding");
+    file.finish();
+    constexpr uint32_t gathered = 8;
+    const MetalBuffer tokens = sharedBuffer(backend, gathered * sizeof(uint32_t));
+    const MetalBuffer output =
+        sharedBuffer(backend, uint64_t{gathered} * columns * splash::model::kBFloat16Bytes);
+    splash::metal::CommandGraph graph;
+    splash::ops::Embedding::add(graph, tokens, table, output, gathered);
+    for (const auto &[tokenBytes, outputBytes, refusal] :
+         {std::tuple{tokens.sizeBytes() - sizeof(uint32_t), output.sizeBytes(), "embedding token buffer holds"},
+          std::tuple{tokens.sizeBytes(), output.sizeBytes() - splash::model::kBFloat16Bytes,
+                     "embedding output buffer holds"}})
+        rejects(
+            [&] {
+                splash::ops::Embedding::add(graph, backend.view(tokens, 0, tokenBytes), table,
+                                            backend.view(output, 0, outputBytes), gathered);
+            },
+            refusal, "token gather past its buffers was accepted");
 }
 
 void testSyntheticPackage(MetalBackend &backend,
@@ -473,9 +311,9 @@ void testSyntheticPackage(MetalBackend &backend,
     target.vocabularySize = 256;
     target.packedGdnWidth = 256;
     target.packedFullWidth = 256;
-    target.convolutionDimension = 256;
-    target.gdnKeyHeads = 2;
-    target.gdnValueHeads = 4;
+    target.convolutionDimension = 192;
+    target.gdnKeyHeads = 1;
+    target.gdnValueHeads = 1;
     target.gdnHeadDimension = 64;
     target.attentionWidth = 64;
     target.intermediateSize = 256;
@@ -483,6 +321,7 @@ void testSyntheticPackage(MetalBackend &backend,
     target.attentionKvHeads = 1;
     target.attentionHeadDimension = 64;
     target.fullAttentionPeriod = 4;
+    target.hiddenCaptureLayers.fill(target.layers - 1);
 
     DFlashDraftLayout draft;
     draft.layers = 2;
@@ -493,8 +332,10 @@ void testSyntheticPackage(MetalBackend &backend,
     draft.attentionSize = 64;
     draft.intermediateSize = 256;
     draft.attentionHeadDimension = 64;
+    draft.rotaryTheta = 10'000'000.0F;
     draft.targetHiddenSize = target.capturedHiddenSize();
     draft.selectorRank = 256;
+    draft.kvHeads = 8;
 
     VisionLayout vision;
     vision.depth = 2;
@@ -513,10 +354,11 @@ void testSyntheticPackage(MetalBackend &backend,
     uint64_t baseline = backend.memoryStats().allocatedBytes;
     uint64_t actualTrackedBytes = 0;
     {
-        auto package = loadModelPackage(
-            backend, root,
-            makeModelDescriptor("Qwen dense loader oracle", target, draft,
-                                vision));
+        ModelDescriptor descriptor =
+            makeModelDescriptor("Qwen dense loader oracle", target, draft, vision,
+                                TargetSource::Package, VisionSource::Package);
+        descriptor.sourceIdentity = "sources";
+        auto package = loadModel(backend, root, descriptor);
         const auto &loadedTarget = std::get<Qwen3_8Weights>(package.target);
         require(loadedTarget.layers.size() == target.layers,
                 "target layer vector is incomplete");
@@ -564,6 +406,16 @@ void testSyntheticPackage(MetalBackend &backend,
         require(weightManifestFingerprint(records) !=
                     package.manifestFingerprintSha256,
                 "manifest fingerprint ignores declared file sizes");
+        records.front().declaredBytes -= kWeightFileAlignment;
+        require(std::all_of(records.begin(), records.end(),
+                            [](const WeightFileRecord &record) {
+                                return record.contentIdentity == "sources";
+                            }),
+                "an image does not record the sources it was written from");
+        records.front().contentIdentity = "other sources";
+        require(weightManifestFingerprint(records) !=
+                    package.manifestFingerprintSha256,
+                "manifest fingerprint ignores the sources' identity");
 
         require(package.draft.layers[0].attentionDynamic.outputSize ==
                         draft.dynamicSize &&
@@ -576,9 +428,33 @@ void testSyntheticPackage(MetalBackend &backend,
                                           expected.draftBytes +
                                           expected.visionBytes,
                 "backend actual allocation accounting is below logical bytes");
+
+        // The weights go back to memory as they were loaded.
+        std::vector<std::vector<uint8_t>> loaded;
+        for (const auto &image : package.images->contents())
+            loaded.emplace_back(image.bytes.begin(), image.bytes.end());
+        package.images->release();
+        require(backend.memoryStats().allocatedBytes - baseline ==
+                    actualTrackedBytes - declaredBytes(loadedTarget.files) -
+                        declaredBytes(package.draft.files) - declaredBytes(package.vision.files),
+                "released weights remain in backend accounting");
+        // They come back an image at a time, in load order.
+        require(!package.images->restore() && !package.images->contents()[0].bytes.empty() &&
+                    package.images->contents()[1].bytes.empty(),
+                "a restore wrote back other than the next image");
+        while (!package.images->restore()) {
+        }
+        const auto restored = package.images->contents();
+        require(restored.size() == loaded.size() &&
+                    std::equal(restored.begin(), restored.end(), loaded.begin(),
+                               [](const auto &image, const std::vector<uint8_t> &bytes) {
+                                   return std::equal(image.bytes.begin(), image.bytes.end(), bytes.begin(),
+                                                     bytes.end());
+                               }),
+                "restored weights differ from the loaded ones");
     }
     require(backend.memoryStats().allocatedBytes == baseline,
-            "model package allocations survived package destruction");
+            "the package's allocations survived its destruction");
 
     std::cout << "synthetic declared_target=" << expected.targetBytes
               << " declared_draft=" << expected.draftBytes
@@ -596,7 +472,7 @@ void validateRealPackage(MetalBackend &backend,
     std::string fingerprint;
     std::string name;
     {
-        auto package = loadModelPackage(backend, root);
+        auto package = loadModel(backend, root, splash::model::inspectModelRoot(root));
         targetBytes = declaredBytes(package.targetFiles());
         draftBytes = declaredBytes(package.draft.files);
         visionBytes = declaredBytes(package.vision.files);
@@ -619,7 +495,7 @@ void validateRealPackage(MetalBackend &backend,
         name = package.name();
     }
     require(backend.memoryStats().allocatedBytes == baseline,
-            "real model mappings survived package destruction");
+            "real model images survived package destruction");
     std::cout << "real model=\"" << name << "\""
               << " declared_target=" << targetBytes
               << " declared_draft=" << draftBytes
@@ -641,7 +517,7 @@ void testRealPackageMetadata(const std::filesystem::path &root) {
     std::filesystem::create_directory(temporary.path() / "tokenizer");
     std::filesystem::copy_file(root / "tokenizer/config.json",
                                temporary.path() / "tokenizer/config.json");
-    const auto expected = splash::model::inspectModelPackage(root);
+    const auto expected = splash::model::inspectModelRoot(root);
     for (std::string_view name : {std::string_view(expected.name),
                                   std::string_view("Community fine-tune")}) {
         for (std::string_view prefix : {"splash-packed-q4", "unknown-packed-q4"}) {
@@ -660,7 +536,7 @@ void testRealPackageMetadata(const std::filesystem::path &root) {
             }
             try {
                 const auto descriptor =
-                    splash::model::inspectModelPackage(temporary.path());
+                    splash::model::inspectModelRoot(temporary.path());
                 require(prefix != "unknown-packed-q4",
                         "unknown model format was accepted");
                 require(descriptor.name == name &&
@@ -689,13 +565,14 @@ int main(int argc, const char *argv[]) {
         testStartupCapabilities();
         MetalBackend backend(argv[1]);
         TempDirectory temporary;
-        testWeightFileValidationAndLifetime(backend, temporary.path());
+        testWeightImages(backend, temporary.path());
+        testGgufImageLayout(backend, temporary.path());
         testSyntheticPackage(backend, temporary.path() / "package");
         if (argc == 3) {
             testRealPackageMetadata(argv[2]);
             validateRealPackage(backend, argv[2]);
         }
-        std::cout << "PASS ModelPackage\n";
+        std::cout << "PASS model-package\n";
     } catch (const std::exception &error) {
         std::cerr << "FAIL: unexpected exception: " << error.what() << '\n';
         return 1;

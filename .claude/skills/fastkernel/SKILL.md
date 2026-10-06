@@ -7,7 +7,7 @@ description: Install, start, connect and stop fastkernel, the local Qwen3.8-27B 
 
 fastkernel serves Qwen3.8-27B or Qwen3.6-35B-A3B on one Apple silicon Mac, with the OpenAI and Anthropic APIs on
 `http://127.0.0.1:8000`. Commands below run from the fastkernel folder (the clone of
-https://github.com/abhishekgahlot2/fastkernel). If you don't know where it is, ask the user.
+https://github.com/loopai-hq/fastkernel). If you don't know where it is, ask the user.
 
 ## 1. Check the Mac
 
@@ -24,8 +24,8 @@ make install MODEL=incoai/Qwen3.8-27B-Splash
 
 The first run downloads the model (17.4 GB). For Qwen3.6-35B-A3B, use `MODEL=incoai/Qwen3.6-35B-A3B-Splash`.
 
-No Xcode? Use the prebuilt package instead: download `fastkernel-1.0.0-macos-arm64.tar.gz` from
-https://github.com/abhishekgahlot2/fastkernel/releases, run `tar -xzf` on it, and work in the `fastkernel` folder it
+No Xcode? Use the prebuilt package instead: download `fastkernel-1.1.0-macos-arm64.tar.gz` from
+https://github.com/loopai-hq/fastkernel/releases, run `tar -xzf` on it, and work in the `fastkernel` folder it
 makes. If `./splash` says macOS quarantined the download, run the `xattr` command it prints. The model downloads on
 the first `serve`.
 
