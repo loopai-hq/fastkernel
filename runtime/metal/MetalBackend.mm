@@ -900,22 +900,37 @@ struct MetalBackend::Impl {
                         signaled.signal(value);
                 }];
             }
+            // The head's allocations stay alive until the GPU ends it, even
+            // when its command is abandoned before then.
+            const std::shared_ptr<CommandTicket::State> keep = head.ticket;
+            [head.command addCompletedHandler:^(id<MTLCommandBuffer>) {
+                static_cast<void>(keep);
+            }];
             residency->use();
             [head.command commit];
         }
         return head;
     }
 
-    // Waits (bounded by the command watchdog) for a head whose submission
-    // will not come, then ends its submission.
+    // Waits (bounded by the command watchdog) for a head whose command will
+    // not come, then ends its submission. A head that failed (terminal
+    // Error) marks the backend unhealthy. One still running past the
+    // watchdog marks it unhealthy and keeps its submission in flight, as an
+    // abandoned command does: memory it reaches stays allocated, and its
+    // completion handler keeps its allocations until the GPU ends it.
     void abandonHead(StreamedHead &head) noexcept {
         const double deadline =
             awakeSeconds() + asyncState->commandWatchdog.timeoutSeconds();
         while (head.command.status < MTLCommandBufferStatusCompleted &&
                awakeSeconds() < deadline)
             usleep(100);
-        if (head.command.status < MTLCommandBufferStatusCompleted)
+        const MTLCommandBufferStatus status = head.command.status;
+        if (status < MTLCommandBufferStatusCompleted) {
             markUnhealthy("a streamed head did not finish after its command was abandoned");
+            return;
+        }
+        if (status == MTLCommandBufferStatusError)
+            markUnhealthy("a streamed head failed on the GPU");
         asyncState->releaseSubmission(head.ticket->sequence);
     }
 
@@ -958,12 +973,15 @@ struct MetalBackend::Impl {
     // Encodes and commits prepared dispatches and the event steps between
     // them; the ticket retains `retained` until it is consumed. With a
     // streamed `head`, `dispatches` and `events` are the command's rest (event
-    // steps still count dispatches from the command's first).
+    // steps still count dispatches from the command's first). The caller
+    // keeps owning a head: when this throws, it waits for the head and ends
+    // the submission (abandonHead), so the command stays in flight while the
+    // GPU still runs the head.
     CommandTicket commit(std::span<const PreparedDispatch> dispatches,
                          std::span<const EventStep> events,
                          std::vector<std::shared_ptr<MetalAllocation>> retained,
                          CommandCompletion completion,
-                         std::optional<StreamedHead> head = std::nullopt) {
+                         StreamedHead *head = nullptr) {
         auto ticketState = head ? head->ticket : std::make_shared<CommandTicket::State>();
         ticketState->backend = asyncState;
         ticketState->completion = std::move(completion);
@@ -981,7 +999,8 @@ struct MetalBackend::Impl {
 
         auto failBeforeCommit = [&](std::string message) {
             markUnhealthy(message);
-            asyncState->releaseSubmission(ticketState->sequence);
+            // A committed head's submission ends once its caller waited for it.
+            if (!head) asyncState->releaseSubmission(ticketState->sequence);
             throw MetalBackendError(std::move(message));
         };
 
@@ -1002,7 +1021,7 @@ struct MetalBackend::Impl {
             std::vector<id<MTLCommandBuffer>> leading;
             if (head) leading.push_back(head->command);
             const size_t committed = leading.size();
-            bool waitHead = head.has_value();
+            bool waitHead = head != nullptr;
             id<MTLComputeCommandEncoder> encoder = nil;
             // Encodes the event steps that follow the first `encoded`
             // dispatches.
@@ -1488,7 +1507,8 @@ CommandTicket MetalBackend::submitCommandAsync(const Command &command,
                              std::move(completion));
     }
     // The rest of a command whose head is committed: a failure from here on
-    // leaves the head running, so it waits for it.
+    // leaves the head running, so the submission stays in flight until the
+    // head ends (abandonHead); `head` keeps owning it throughout.
     try {
         if (head->dispatches >= command.dispatches.size() ||
             head->events > command.events.size() ||
@@ -1500,13 +1520,10 @@ CommandTicket MetalBackend::submitCommandAsync(const Command &command,
             impl_->prepare(command.dispatches.subspan(head->dispatches));
         return impl_->commit(prepared.dispatches, command.events.subspan(head->events),
                              std::move(prepared.retainedAllocations),
-                             std::move(completion), std::move(head));
+                             std::move(completion), &*head);
     } catch (...) {
-        // commit() took the head over (its own failures end the submission).
-        if (head && head->ticket) {
-            impl_->markUnhealthy("a command failed after its head was committed");
-            impl_->abandonHead(*head);
-        }
+        impl_->markUnhealthy("a command failed after its head was committed");
+        impl_->abandonHead(*head);
         throw;
     }
 }

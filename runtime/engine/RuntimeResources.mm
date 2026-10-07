@@ -19,6 +19,7 @@
 #include <span>
 #include <sstream>
 #include <utility>
+#include <variant>
 
 namespace splash::engine {
 namespace {
@@ -416,9 +417,19 @@ RuntimeResources::create(const RuntimeResourcesConfig &config,
         std::string("model allocated-size plan is invalid: ") + error.what());
   }
   // SPLASH_DRAFT_HEAD_IDS: the restricted draft head is a gathered copy of
-  // target head rows, planned with the draft weights; 0 below when it does
-  // not fit, and the model then drafts with the full head.
+  // target head rows, planned with the draft weights; 0 below when the target
+  // head cannot be gathered or the copy does not fit, and the model then
+  // drafts with the full head.
   uint64_t draftHeadBytes = model::DFlashDraft::restrictedHeadPlannedBytes(loaded.draft.layout);
+  if (draftHeadBytes &&
+      !model::DFlashDraft::gathersRestrictedHead(
+          loaded.draft.layout,
+          std::visit([](const auto &weights) -> const ops::Projection & { return weights.logitsProjection; },
+                     loaded.target))) {
+    draftHeadBytes = 0;
+    logLine("The restricted draft head (SPLASH_DRAFT_HEAD_IDS) needs an affine Q4 target head; "
+            "drafting with the full head.");
+  }
   // The engine's memory plan, with `aneFfnBytes` set aside for the prefill
   // FFN's Neural Engine split.
   const auto planMemory = [&](uint64_t aneFfnBytes) {
@@ -665,7 +676,8 @@ model::RuntimeContext RuntimeResources::modelContext() noexcept {
       *stateStorage_,
       operators_,
       aneFfn_.get(),
-      // The plan carries the restricted draft head exactly when it fit.
+      // The plan carries the restricted draft head exactly when the target
+      // head can be gathered and the copy fit.
       memoryPlan_.breakdown().draftWeightsBytes > model_.draft.actualAllocatedBytes,
   };
 }

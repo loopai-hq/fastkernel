@@ -1801,6 +1801,92 @@ void streamedHeads(const std::string &metallibPath) {
             "a head was streamed while every dispatch is profiled");
     std::cout << "PASS streamed and chunked heads\n";
 }
+
+// Failure-path injection for streamed heads. failingCommandBuffer fails every
+// command buffer request of the thread that sets failCommandBuffersHere;
+// recordCommit remembers the last committed command buffer.
+thread_local bool failCommandBuffersHere = false;
+IMP originalQueueCommandBuffer = nullptr;
+id failingCommandBuffer(id queue, SEL selector) {
+    if (failCommandBuffersHere) return nil;
+    return reinterpret_cast<id (*)(id, SEL)>(originalQueueCommandBuffer)(queue, selector);
+}
+std::atomic<void *> lastCommitted{nullptr};
+IMP originalRecordedCommit = nullptr;
+void recordCommit(id command, SEL selector) {
+    lastCommitted.store((__bridge void *)command);
+    reinterpret_cast<void (*)(id, SEL)>(originalRecordedCommit)(command, selector);
+}
+
+// A command whose rest cannot be encoded after its head was committed stays
+// in flight until the head ends (memory the head reaches stays allocated),
+// then fails and leaves the backend unhealthy; an abandoned head that failed
+// on the GPU (terminal Error) marks the backend unhealthy.
+void streamedHeadFailures(const std::string &metallibPath) {
+    {
+        MetalBackend backend(metallibPath);
+        MetalBuffer buffer = sharedBuffer(backend, sizeof(uint32_t));
+        auto *value = static_cast<volatile uint32_t *>(buffer.contents());
+        *value = 0;
+        const uint32_t count = 1, one = 1, ten = 10;
+        const std::vector<ComputeDispatch> pair{addition(buffer, count, one),
+                                                addition(buffer, count, ten)};
+        // The head ends only once the test raises the gate.
+        const SharedEvent gate = backend.newSharedEvent();
+        const std::vector<EventStep> steps{{1, gate, 1, EventStep::Kind::Wait}};
+        require(backend.streamHead(Command{std::span(pair).first(1), steps}),
+                "a gated head was not streamed");
+        id<MTLCommandQueue> probe =
+            [MTLCreateSystemDefaultDevice() newCommandQueueWithMaxCommandBufferCount:512];
+        MethodReplacement creation(probe, @selector(commandBuffer),
+                                   reinterpret_cast<IMP>(failingCommandBuffer));
+        originalQueueCommandBuffer = creation.original;
+        auto submitted = std::async(std::launch::async, [&] {
+            failCommandBuffersHere = true;
+            std::string error;
+            try {
+                (void)backend.submitCommandAsync(Command{pair, steps});
+            } catch (const MetalBackendError &caught) {
+                error = caught.what();
+            }
+            failCommandBuffersHere = false;
+            return error;
+        });
+        const bool returnedEarly =
+            submitted.wait_for(std::chrono::milliseconds(200)) == std::future_status::ready;
+        const bool inFlight = backend.commandInFlight();
+        gate.signal(1);
+        const std::string error = submitted.get();
+        require(!returnedEarly && inFlight,
+                "a command whose rest failed left flight while its head still ran");
+        require(error.find("unable to create Metal command buffer") != std::string::npos &&
+                    !backend.healthy() && !backend.commandInFlight() && *value == 1,
+                "a command whose rest failed did not end after its head: " + error);
+    }
+    {
+        MetalBackend backend(metallibPath);
+        MetalBuffer buffer = sharedBuffer(backend, sizeof(uint32_t));
+        const uint32_t count = 1, one = 1;
+        const ComputeDispatch dispatch = addition(buffer, count, one);
+        id<MTLCommandBuffer> probe =
+            [[MTLCreateSystemDefaultDevice() newCommandQueue] commandBuffer];
+        MethodReplacement commit(probe, @selector(commit), reinterpret_cast<IMP>(recordCommit));
+        originalRecordedCommit = commit.original;
+        MethodReplacement status(probe, @selector(status),
+                                 reinterpret_cast<IMP>(terminalCommandStatus));
+        originalCommandStatus = status.original;
+        require(backend.streamHead(Command{{&dispatch, 1}, {}}), "a head was not streamed");
+        failedCommand.store(lastCommitted.load());
+        backend.abandonStreamedHead();
+        failedCommand.store(nullptr);
+        require(!backend.healthy() &&
+                    backend.unhealthyReason().find("streamed head failed") != std::string::npos &&
+                    !backend.commandInFlight(),
+                "an abandoned head that failed on the GPU left the backend healthy: " +
+                    backend.unhealthyReason());
+    }
+    std::cout << "PASS streamed head failures keep the command in flight and report errors\n";
+}
 }  // namespace
 
 int main(int argc, const char *argv[]) {
@@ -1830,6 +1916,7 @@ int main(int argc, const char *argv[]) {
             sharedEventNotifies(argv[1]);
             eventSteps(argv[1]);
             streamedHeads(argv[1]);
+            streamedHeadFailures(argv[1]);
             eventPairsRunInOrder(argv[1]);
             malformedEventStepsRefused(argv[1]);
             failedBufferStillSignals(argv[1]);

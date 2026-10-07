@@ -80,8 +80,9 @@ struct RuntimeContext final {
   const ops::ExecutionPlans &operators;
   // The prefill FFN's Neural Engine split (engine::startAneFfn), if any.
   ops::AneFfn *aneFfn = nullptr;
-  // SPLASH_DRAFT_HEAD_IDS: false when the memory plan could not hold the
-  // restricted draft head; drafts then use the full head.
+  // SPLASH_DRAFT_HEAD_IDS: false when the memory plan does not carry the
+  // restricted draft head (the target head cannot be gathered or the copy did
+  // not fit); drafts then use the full head.
   bool restrictedDraftHead = true;
 };
 

@@ -85,6 +85,12 @@ uint64_t DFlashDraft::restrictedHeadPlannedBytes(const DFlashDraftLayout &layout
   return rows ? pages(rows * layout.hiddenSize / 2) + 2 * metadata + pages(rows * 4) : 0;
 }
 
+bool DFlashDraft::gathersRestrictedHead(const DFlashDraftLayout &layout,
+                                        const ops::Projection &target) noexcept {
+  return target.outputSize == layout.vocabularySize &&
+         target.layout() == ops::WeightLayout::Affine64 && target.inputSize % 64 == 0;
+}
+
 void DFlashDraft::loadRestrictedHead(const ops::Projection &target) const {
   if (!headIds_.empty())
     static_cast<void>(draftHead(target));
@@ -99,8 +105,8 @@ void DFlashDraft::disableRestrictedHead() noexcept {
 uint64_t DFlashDraft::restrictedHeadAllocatedBytes() const noexcept {
   if (!restrictedHead_) return 0;
   const ops::AffineWeights &planes = restrictedHead_->affine();
-  return planes.weights.sizeBytes() + planes.scales.sizeBytes() + planes.biases.sizeBytes() +
-         headIdMap_.sizeBytes();
+  return planes.weights.allocatedBytes() + planes.scales.allocatedBytes() +
+         planes.biases.allocatedBytes() + headIdMap_.allocatedBytes();
 }
 
 DFlashDraftRing::DFlashDraftRing(
@@ -246,12 +252,10 @@ void DFlashDraft::useHeadSegment(uint64_t owner, uint64_t version,
 const ops::Projection &DFlashDraft::draftHead(const ops::Projection &target) const {
   if (restrictedHead_)
     return *restrictedHead_;
-  if (headIds_.empty() || target.outputSize != weights_.layout.vocabularySize ||
-      target.layout() != ops::WeightLayout::Affine64)
+  if (headIds_.empty() || !gathersRestrictedHead(weights_.layout, target))
     throw std::logic_error("restricted draft head needs SPLASH_DRAFT_HEAD_IDS and the full affine target head");
   const ops::AffineWeights &source = target.affine();
-  if (!source.weights.contents() || !source.scales.contents() || !source.biases.contents() ||
-      target.inputSize % 64)
+  if (!source.weights.contents() || !source.scales.contents() || !source.biases.contents())
     throw std::runtime_error("target head is not CPU-visible Q4 for draft head gathering");
   const uint32_t count = static_cast<uint32_t>(headIds_.size()) + kHeadSegmentRows;
   const uint64_t groups = target.inputSize / 64;

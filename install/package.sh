@@ -5,7 +5,7 @@
 # Usage: make all && install/package.sh [VERSION]
 set -eu
 cd "$(dirname -- "$0")/.."
-version=${1:-1.1.0}
+version=${1:-1.1.1}
 test -x build/splash && test -f build/splash.metallib || { echo "error: run 'make all' first" >&2; exit 1; }
 
 stage=$(mktemp -d)

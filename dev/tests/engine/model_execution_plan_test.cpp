@@ -123,6 +123,22 @@ void checkMixedLayouts() {
           "a target mixing MoE layouts reached execution");
 }
 
+// SPLASH_DRAFT_HEAD_IDS gathers the restricted draft head's rows from the
+// target's affine Q4 head. A GGUF target's head is block-quantized: startup
+// plans no restricted head for it (RuntimeResources) and drafts with the full
+// head instead of failing.
+void checkRestrictedHeadNeedsAffineHead() {
+  auto dense = package<model::Qwen3_8Weights>();
+  auto &head = std::get<model::Qwen3_8Weights>(dense.target).logitsProjection;
+  require(model::DFlashDraft::gathersRestrictedHead(dense.draft.layout, head),
+          "the restricted draft head must gather from an affine target head");
+  head = ops::Projection(head.outputSize, head.inputSize,
+                         ops::BlockWeights{{ops::QuantizedSegment::planes(GGUF_FMT_Q6K, head.outputSize,
+                                                                          head.inputSize, {}, {}, {})}});
+  require(!model::DFlashDraft::gathersRestrictedHead(dense.draft.layout, head),
+          "a GGUF target's block head must leave the draft its full head");
+}
+
 // One decode arena serves every lane count, and on Apple10 and later a
 // Split128 plan's partials grow with the rows. The arena must hold every
 // lane's plan of every affine target and draft projection at the measured
@@ -198,6 +214,7 @@ int main() {
     checkUnsizedProjection();
     checkGdnWidths();
     checkMixedLayouts();
+    checkRestrictedHeadNeedsAffineHead();
     const auto dense = package<model::Qwen3_8Weights>();
     const auto sparse = package<model::Qwen3_6MoeWeights>();
     checkLaneScratch(dense);

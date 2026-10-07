@@ -238,9 +238,16 @@ public:
   // Bytes the restricted head allocates (0 when unset), each buffer rounded
   // to 16 KiB pages; the memory plan counts them with the draft weights.
   [[nodiscard]] static uint64_t restrictedHeadPlannedBytes(const DFlashDraftLayout &layout);
+  // Whether the restricted head can gather its rows from `target`, the
+  // target's vocabulary head: only from the full affine Q4 head, not from a
+  // GGUF target's block-quantized one. Startup plans no restricted head
+  // otherwise, and every request drafts with the full head.
+  [[nodiscard]] static bool gathersRestrictedHead(const DFlashDraftLayout &layout,
+                                                  const ops::Projection &target) noexcept;
   // Gathers the restricted head at startup (it is planned), before warmup.
   void loadRestrictedHead(const ops::Projection &target) const;
-  // The memory plan could not hold it: every request drafts with the full head.
+  // The memory plan does not carry it (the target head cannot be gathered or
+  // the copy did not fit): every request drafts with the full head.
   void disableRestrictedHead() noexcept;
   [[nodiscard]] uint64_t restrictedHeadAllocatedBytes() const noexcept;
   [[nodiscard]] bool hasRestrictedHead() const noexcept { return restrictedHead_.has_value(); }

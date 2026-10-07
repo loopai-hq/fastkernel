@@ -24,7 +24,7 @@ make install MODEL=incoai/Qwen3.8-27B-Splash
 
 The first run downloads the model (17.4 GB). For Qwen3.6-35B-A3B, use `MODEL=incoai/Qwen3.6-35B-A3B-Splash`.
 
-No Xcode? Use the prebuilt package instead: download `fastkernel-1.1.0-macos-arm64.tar.gz` from
+No Xcode? Use the prebuilt package instead: download `fastkernel-1.1.1-macos-arm64.tar.gz` from
 https://github.com/loopai-hq/fastkernel/releases, run `tar -xzf` on it, and work in the `fastkernel` folder it
 makes. If `./splash` says macOS quarantined the download, run the `xattr` command it prints. The model downloads on
 the first `serve`.

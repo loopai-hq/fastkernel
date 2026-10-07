@@ -123,6 +123,102 @@ Per prompt, in tok/s:
 
 </details>
 
+### fastkernel 1.1.0 vs MTPLX, AX Engine, MLX-LM and llama.cpp
+
+Each engine ran side by side with the fastkernel 1.1.0 release package, one pair per session, taking turns on each
+prompt: the 6 standard prompts sampled, or 5 of them greedy for AX Engine (it takes prompts of up to 16K tokens, so the
+agent task is left out).
+
+| Engine | Answers | Its tok/s | fastkernel 1.1.0 tok/s | fastkernel 1.1.0 is |
+|---|---|---:|---:|---|
+| MTPLX 2.12.0 (Bare-Speed 4-bit + MTP) | sampled | 65.7 | 118.2 | **1.80× faster** (95% range 1.62–1.97×) |
+| AX Engine 7.5.7 (MXFP4 + MTP) | greedy | 38.3 | 119.6 | **3.12× faster** (95% range 2.78–3.48×) |
+| MLX-LM 0.31.3 (4-bit) | sampled | 30.9 | 114.9 | **3.72× faster** (95% range 2.93–4.51×) |
+| llama.cpp 0.5.0 (Q4_K_M GGUF) | sampled | 26.7 | 110.7 | **4.14× faster** (95% range 3.23–5.07×) |
+
+Conditions: 2026-10-07, 04:33–05:33 IST, on AC power, Chrome and LM Studio open. The Mac was warm ("fair") for most
+requests.
+
+<details>
+<summary>Details</summary>
+
+- Settings: tools/head2head's request body (temperature 1, top-p 0.95, top-k 20, up to 1,024 tokens, reasoning effort
+  medium; temperature 0 for AX Engine), seeds 20261501 and 20261502, the engine order alternating by prompt and seed.
+  tok/s is the mean of the per-request client decode speeds; the ratio is of those means, with a 95% bootstrap range.
+- fastkernel 1.1.0: the release package, the official `incoai/Qwen3.8-27B-Splash` package and the Quick start flags.
+- MTPLX 2.12.0: `Youssofal/Qwen3.8-27B-MTPLX-Bare-Speed`, its server's defaults (04:49–04:55; 22 of 24 requests warm).
+- AX Engine 7.5.7: `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP` with `--mlx-mtp-policy required --speculation-profile
+  coding` (05:28–05:33; 20 of 20 requests warm).
+- MLX-LM 0.31.3 with mlx 0.32.3: `mlx-community/Qwen3.8-27B-4bit`, the weights fastkernel's package was converted from
+  (05:19–05:28; 17 of 24 requests warm).
+- llama.cpp 0.5.0 (build 11146, Metal): `lmstudio-community/Qwen3.8-27B-GGUF` Q4_K_M, a 40,960-token context and one
+  slot (04:33–04:42; 24 of 24 requests warm).
+
+Per prompt, in tok/s (fastkernel 1.1.0 / the other engine, mean of 2 seeds):
+
+| Prompt | vs MTPLX | vs AX Engine | vs MLX-LM | vs llama.cpp |
+|---|---:|---:|---:|---:|
+| chat | 78.8 / 50.2 | 77.4 / 32.2 | 78.1 / 30.9 | 70.2 / 27.3 |
+| math | 167.7 / 80.1 | 155.4 / 52.0 | 165.0 / 32.4 | 158.1 / 27.5 |
+| code | 154.4 / 77.2 | 156.8 / 49.8 | 151.9 / 31.9 | 148.8 / 27.6 |
+| code file | 121.3 / 71.8 | 122.8 / 33.2 | 120.6 / 31.5 | 114.4 / 27.0 |
+| agent (32K prompt) | 90.5 / 52.9 | | 86.0 / 27.5 | 83.7 / 23.4 |
+| multilingual | 96.3 / 61.9 | 85.8 / 24.4 | 88.1 / 31.4 | 89.1 / 27.5 |
+
+</details>
+
+### Qwen3.6-35B-A3B: fastkernel 1.1.0 vs Splash 1.3.0, 6 prompts
+
+| Answers | fastkernel 1.1.0 tok/s | Splash 1.3.0 tok/s | Ratio (95% range) |
+|---|---:|---:|---|
+| Sampled | 268.1 | 260.9 | 1.03× (1.00–1.05×) |
+| Greedy | 299.6 | 276.1 | 1.09× (0.99–1.23×) |
+
+Conditions: 2026-10-07, 05:33–05:36 IST, on AC power, Chrome and LM Studio open, the Mac warm ("fair").
+
+<details>
+<summary>Details</summary>
+
+- Both servers ran the official `incoai/Qwen3.6-35B-A3B-Splash` package in one session, taking turns on each prompt,
+  with the settings of the test above (temperature 1 and 0).
+
+Per prompt, in tok/s (fastkernel 1.1.0 / Splash 1.3.0, mean of 2 seeds):
+
+| Prompt | Sampled | Greedy |
+|---|---:|---:|
+| chat | 199.7 / 203.5 | 233.6 / 200.7 |
+| math | 351.9 / 333.8 | 362.7 / 374.1 |
+| code | 377.5 / 357.4 | 358.9 / 360.3 |
+| code file | 270.3 / 262.8 | 385.4 / 275.5 |
+| agent (32K prompt) | 166.1 / 168.1 | 192.3 / 185.0 |
+| multilingual | 242.9 / 240.0 | 264.5 / 260.9 |
+
+</details>
+
+### Demo videos
+
+The videos at the top of the README replay measured token timings in real time. Each engine's server ran alone, one
+after another, with greedy answers and 3 runs per prompt (2026-10-07, 04:57–05:14 IST, on AC power, the Mac cool
+("nominal") for every run). The prompt for each video was picked by a rule fixed before any run.
+
+| Video | Prompt | fastkernel 1.1.0 | Splash 1.3.0 | MLX-LM |
+|---|---|---:|---:|---:|
+| Same answer | a Python command-line todo app; all three engines write the same 708 tokens | 3.97 s (184.5 tok/s) | 4.07 s (179.7 tok/s) | 23.1 s (30.8 tok/s) |
+| Galaxy app | a one-shot particle-galaxy web app | 3,124 tokens in 20.9 s (150.4 tok/s) | the same 3,124 tokens in 22.1 s (141.2 tok/s) | |
+| Code edit | an edit to a pasted 210-line Python file | 8.2 s (315.6 tok/s) | 11.7 s (196.4 tok/s) | 64.5 s (30.9 tok/s) |
+
+<details>
+<summary>Details</summary>
+
+- Same answer: the first of 4 prompts whose text matched on all three engines; the median-finish run of each.
+- Galaxy app: Splash 1.3.0 reached the 3,500-token limit, so the video compares the time to the same token count. The
+  two texts differ from about token 322.
+- Code edit: each engine's first run, so no prompt cache was reused. The texts differ from line 4 (1,894 tokens for
+  fastkernel 1.1.0, 1,884 for the others).
+- Times are from the run each video shows; tok/s is each engine's median decode speed over its 3 runs.
+
+</details>
+
 The tests below ran fastkernel 1.0.0 and its pre-release builds, 2026-09-26 to 2026-09-30.
 
 ### Sampled answers vs Splash 1.1.0, 6 prompts
