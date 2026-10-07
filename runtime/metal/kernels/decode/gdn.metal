@@ -38,8 +38,10 @@ template <uint HeadDim> struct GdnDecodeShared {
 // q/k/v and the gates go to threadgroup memory for the scan; k, v and the
 // gates also go to device memory for the commit. mixed holds k and v at their
 // ConvDim columns; its q columns are not written.
+// StoreState = false (SPLASH_GDN_SCAN_NOSTORE): no convolution carry; the
+// commit replays it.
 template <uint KeyHeads, uint ValueHeads, uint HeadDim, uint ConvDim,
-          uint PackedWidth>
+          uint PackedWidth, bool StoreState = true>
 inline void gdn_decode_prologue(
     device const bfloat *packed, device const bfloat *conv_weights,
     device const bfloat *conv_state_in, device bfloat *conv_state_out,
@@ -60,7 +62,7 @@ inline void gdn_decode_prologue(
   // The key head's q/k rows and conv carry are shared by HeadsPerKey value
   // heads; the first of them writes the shared copies.
   const bool shared_writer = value_head % HeadsPerKey == 0;
-  const bool carrier = simd_group < SPLASH_GDN_CONVOLUTION_TAPS - 1;
+  const bool carrier = StoreState && simd_group < SPLASH_GDN_CONVOLUTION_TAPS - 1;
   const uint token = simd_group;
   const uint q_channel = key_head * HeadDim + lane;
   const uint k_channel = KeyWidth + q_channel;
@@ -136,7 +138,9 @@ inline void gdn_decode_prologue(
 // Each row preserves the decay, memory, delta, update, output operation order.
 // The next rows' state is loaded before these rows' state is stored, and the
 // output rows go to threadgroup memory for the gate.
-template <uint HeadDim, uint RowsInFlight>
+// StoreState = false (SPLASH_GDN_SCAN_NOSTORE): the eight-row state is not
+// stored; the commit replays the retained rows.
+template <uint HeadDim, uint RowsInFlight, bool StoreState = true>
 inline void gdn_decode_scan(device const float *state_in,
                             device float *state_out,
                             threadgroup GdnDecodeShared<HeadDim> &shared,
@@ -197,7 +201,8 @@ inline void gdn_decode_scan(device const float *state_in,
     }
     for (uint r = 0; r < RowsInFlight; ++r)
       for (uint i = 0; i < 4; ++i) {
-        state_out[base(batch, r) + i] = state[r][i];
+        if (StoreState)
+          state_out[base(batch, r) + i] = state[r][i];
         state[r][i] = upcoming[r][i];
       }
   }
@@ -251,9 +256,11 @@ inline void gdn_decode_gate(threadgroup GdnDecodeShared<HeadDim> &shared,
 }
 
 // Grid x is the value heads. SkipFull = false (fastkernel's wide commit
-// tiles, gdn_wide.h) replays all eight rows too.
+// tiles, gdn_wide.h) replays all eight rows too. Conv / Recurrent = false
+// (SPLASH_GDN_DEFER) leave that part of the cell to another dispatch.
 template <uint KeyHeads, uint ValueHeads, uint HeadDim, uint ConvDim,
-          uint PackedWidth, bool SkipFull = true>
+          uint PackedWidth, bool SkipFull = true, bool Conv = true,
+          bool Recurrent = true>
 inline void
 gdn_commit_phase(device const bfloat *packed, device const bfloat *mixed_qkv,
                  device const float *decay, device const bfloat *beta,
@@ -270,7 +277,7 @@ gdn_commit_phase(device const bfloat *packed, device const bfloat *mixed_qkv,
   if (SkipFull && count == SPLASH_TARGET_VERIFY_ROWS)
     return;
   for (uint element = group * 256 + thread_index;
-       element < (SPLASH_GDN_CONVOLUTION_TAPS - 1) * ConvDim;
+       Conv && element < (SPLASH_GDN_CONVOLUTION_TAPS - 1) * ConvDim;
        element += ValueHeads * 256) {
     uint row = element / ConvDim;
     uint channel = element % ConvDim;
@@ -278,7 +285,7 @@ gdn_commit_phase(device const bfloat *packed, device const bfloat *mixed_qkv,
         packed, conv_state_in, PackedWidth, ConvDim, count, row, channel);
   }
 
-  for (uint task = group; task < ValueHeads * ValueBatches;
+  for (uint task = group; Recurrent && task < ValueHeads * ValueBatches;
        task += ValueHeads) {
     uint value_head = task / ValueBatches;
     uint value_dim = (task % ValueBatches) * 8 + simd_group;
@@ -318,7 +325,7 @@ gdn_commit_phase(device const bfloat *packed, device const bfloat *mixed_qkv,
 // Grid {value heads, layers, lanes}; each lane's rows of a layer's packed,
 // mixed and gate tensors follow the four lanes of the layer before.
 template <uint KeyHeads, uint ValueHeads, uint HeadDim, uint ConvDim,
-          uint PackedWidth>
+          uint PackedWidth, bool SkipFull, bool Recurrent>
 inline void gdn_commit_prefix_batch_phase(
     device const bfloat *packed, device const bfloat *mixed_qkv,
     device const float *decay, device const bfloat *beta,
@@ -348,14 +355,15 @@ inline void gdn_commit_prefix_batch_phase(
   device float *state_out = reinterpret_cast<device float *>(
       next + params.convolution_state_bytes +
       ulong(layer) * params.recurrent_layer_bytes);
-  gdn_commit_phase<KeyHeads, ValueHeads, HeadDim, ConvDim, PackedWidth>(
+  gdn_commit_phase<KeyHeads, ValueHeads, HeadDim, ConvDim, PackedWidth,
+                   SkipFull, true, Recurrent>(
       packed, mixed_qkv, decay, beta, conv_state_in, conv_state_out, state_in,
       state_out, retained[batch], group.x, thread_index, simd_lane,
       simd_group);
 }
 
 #define GDN_COMMIT_ENTRY(Name, KeyHeads, ValueHeads, HeadDim, ConvDim,        \
-                         PackedWidth)                                         \
+                         PackedWidth, SkipFull, Recurrent)                    \
   kernel void Name(                                                           \
       device const bfloat *packed [[buffer(0)]],                              \
       device const bfloat *mixed_qkv [[buffer(1)]],                           \
@@ -375,19 +383,57 @@ inline void gdn_commit_prefix_batch_phase(
       uint simd_lane [[thread_index_in_simdgroup]],                           \
       uint simd_group [[simdgroup_index_in_threadgroup]]) {                   \
     gdn_commit_prefix_batch_phase<KeyHeads, ValueHeads, HeadDim, ConvDim,     \
-                                  PackedWidth>(                               \
+                                  PackedWidth, SkipFull, Recurrent>(          \
         packed, mixed_qkv, decay, beta, current_0, current_1, current_2,       \
         current_3, next_0, next_1, next_2, next_3, retained, params, group,    \
         thread_index, simd_lane, simd_group);                                 \
   }
 
-GDN_COMMIT_ENTRY(verify_gdn_commit, 16, 48, 128, 10240, 16640)
-GDN_COMMIT_ENTRY(verify_gdn_commit_vh32, 16, 32, 128, 8192, 12544)
+GDN_COMMIT_ENTRY(verify_gdn_commit, 16, 48, 128, 10240, 16640, true, true)
+GDN_COMMIT_ENTRY(verify_gdn_commit_vh32, 16, 32, 128, 8192, 12544, true, true)
+// SPLASH_GDN_SCAN_NOSTORE (ops/GDN.cpp): a fully retained lane replays its
+// eight rows too; the one-lane scan stores no state.
+GDN_COMMIT_ENTRY(verify_gdn_commit_replay, 16, 48, 128, 10240, 16640, false, true)
+// SPLASH_GDN_DEFER (ops/GDN.cpp): a deferred B1 cycle commits only the
+// convolution carry; its recurrent rows wait for the next scan or a flush.
+GDN_COMMIT_ENTRY(verify_gdn_commit_conv, 16, 48, 128, 10240, 16640, false, false)
 #undef GDN_COMMIT_ENTRY
+
+// SPLASH_GDN_DEFER (ops/GDN.cpp): a B1 lane's pending recurrent commit where
+// no deferred scan takes it. Its params.count rows (verify scratch lane slot
+// params.parity of each layer) replay with the commit's arithmetic from
+// `base` (the lane's next cell, which holds the state before them) into `out`
+// (its current cell); the convolution carry was committed with the cycle.
+// Grid {value heads, layers, 1}.
+kernel void verify_gdn_commit_flush(
+    device const bfloat *mixed_qkv [[buffer(0)]],
+    device const float *decay [[buffer(1)]],
+    device const bfloat *beta [[buffer(2)]],
+    device const uchar *base [[buffer(3)]], device uchar *out [[buffer(4)]],
+    constant GDNDeferParams &params [[buffer(5)]],
+    uint3 group [[threadgroup_position_in_grid]],
+    uint thread_index [[thread_index_in_threadgroup]],
+    uint simd_lane [[thread_index_in_simdgroup]],
+    uint simd_group [[simdgroup_index_in_threadgroup]]) {
+  constexpr uint Rows = SPLASH_TARGET_VERIFY_ROWS;
+  const uint layer = group.y;
+  const ulong rows =
+      (ulong(layer) * SPLASH_MAXIMUM_BATCH_WIDTH + params.parity) * Rows;
+  device const float *state_in = reinterpret_cast<device const float *>(
+      base + params.convolution_state_bytes +
+      ulong(layer) * params.recurrent_layer_bytes);
+  device float *state_out = reinterpret_cast<device float *>(
+      out + params.convolution_state_bytes +
+      ulong(layer) * params.recurrent_layer_bytes);
+  gdn_commit_phase<16, 48, 128, 10240, 16640, false, false, true>(
+      nullptr, mixed_qkv + rows * 10240, decay + rows * 48, beta + rows * 48,
+      nullptr, nullptr, state_in, state_out, params.count, group.x,
+      thread_index, simd_lane, simd_group);
+}
 
 // Grid {value heads, lanes}.
 template <uint KeyHeads, uint ValueHeads, uint HeadDim, uint ConvDim,
-          uint PackedWidth, uint RowsInFlight, class Table, class W>
+          uint PackedWidth, uint RowsInFlight, bool StoreState, class Table, class W>
 inline void gdn_decode_batch_phase(
     device const bfloat *packed, device const bfloat *conv_weights,
     device const uchar *current0, device const uchar *current1,
@@ -422,11 +468,11 @@ inline void gdn_decode_batch_phase(
       ulong(params.layer) * params.recurrent_layer_bytes);
 
   device bfloat *lane_hidden = gdn_hidden + ulong(batch) * Rows * ValueWidth;
-  gdn_decode_prologue<KeyHeads, ValueHeads, HeadDim, ConvDim, PackedWidth>(
+  gdn_decode_prologue<KeyHeads, ValueHeads, HeadDim, ConvDim, PackedWidth, StoreState>(
       packed, conv_weights, conv_state_in, conv_state_out, mixed, a_scale,
       dt_bias, decay, beta, shared, group.x, lane, simd_group);
   threadgroup_barrier(mem_flags::mem_threadgroup);
-  gdn_decode_scan<HeadDim, RowsInFlight>(state_in, state_out, shared, group.x,
+  gdn_decode_scan<HeadDim, RowsInFlight, StoreState>(state_in, state_out, shared, group.x,
                                          lane, simd_group);
   threadgroup_barrier(mem_flags::mem_threadgroup);
   const bool tiled = params.tiled_heads != 0;
@@ -463,55 +509,64 @@ inline void gdn_decode_batch_phase(
 #define GDN_DECODE_THREADS \
     uint2 group [[threadgroup_position_in_grid]], \
     uint lane [[thread_index_in_simdgroup]], uint simd_group [[simdgroup_index_in_threadgroup]]
-#define GDN_DECODE_BODY(KeyHeads, ValueHeads, HeadDim, ConvDim, PackedWidth, table, sums, Layout) \
+#define GDN_DECODE_BODY(KeyHeads, ValueHeads, HeadDim, ConvDim, PackedWidth, table, sums, Layout, StoreState) \
     threadgroup GdnDecodeShared<HeadDim> shared; \
-    gdn_decode_batch_phase<KeyHeads, ValueHeads, HeadDim, ConvDim, PackedWidth, 2, Layout>( \
+    gdn_decode_batch_phase<KeyHeads, ValueHeads, HeadDim, ConvDim, PackedWidth, 2, StoreState, Layout>( \
         packed, conv_weights, current0, current1, current2, current3, next0, \
         next1, next2, next3, mixed, a_scale, dt_bias, decay, beta, \
         gdn_norm_weight, gdn_hidden, params, group, lane, simd_group, shared, \
         table, sums);
 // Entries without a table pass null pointers, which skip the write; their Layout only completes the template.
-#define GDN_DECODE_ENTRY(Name, KeyHeads, ValueHeads, HeadDim, ConvDim, PackedWidth, W) \
+#define GDN_DECODE_ENTRY(Name, KeyHeads, ValueHeads, HeadDim, ConvDim, PackedWidth, W, StoreState) \
   kernel void Name(GDN_DECODE_BUFFERS(W), \
       constant GDNDecodeBatchParams &params [[buffer(17)]], GDN_DECODE_THREADS) { \
-    GDN_DECODE_BODY(KeyHeads, ValueHeads, HeadDim, ConvDim, PackedWidth, nullptr, nullptr, q4sg::Table64) \
+    GDN_DECODE_BODY(KeyHeads, ValueHeads, HeadDim, ConvDim, PackedWidth, nullptr, nullptr, q4sg::Table64, StoreState) \
   }
 // The out-projection's table (Layout: q4sg::Table64 affine, gguf_sg::Table16 GGUF).
-#define GDN_DECODE_TABLE_ENTRY(Name, KeyHeads, ValueHeads, HeadDim, ConvDim, PackedWidth, Layout, W) \
+#define GDN_DECODE_TABLE_ENTRY(Name, KeyHeads, ValueHeads, HeadDim, ConvDim, PackedWidth, Layout, W, StoreState) \
   kernel void Name(GDN_DECODE_BUFFERS(W), \
       device bfloat *table [[buffer(17)]], device float *sums [[buffer(18)]], \
       constant GDNDecodeBatchParams &params [[buffer(19)]], GDN_DECODE_THREADS) { \
-    GDN_DECODE_BODY(KeyHeads, ValueHeads, HeadDim, ConvDim, PackedWidth, table, sums, Layout) \
+    GDN_DECODE_BODY(KeyHeads, ValueHeads, HeadDim, ConvDim, PackedWidth, table, sums, Layout, StoreState) \
   }
 
 // Two rows overlap reductions and arithmetic without the register cost of four.
-GDN_DECODE_ENTRY(verify_gdn_fused, 16, 48, 128, 10240, 16640, bfloat)
-GDN_DECODE_ENTRY(verify_gdn_fused_vh32, 16, 32, 128, 8192, 12544, bfloat)
+GDN_DECODE_ENTRY(verify_gdn_fused, 16, 48, 128, 10240, 16640, bfloat, true)
+GDN_DECODE_ENTRY(verify_gdn_fused_vh32, 16, 32, 128, 8192, 12544, bfloat, true)
 // Table64 feeds the affine models, whose norms are bf16; Table16 a GGUF's, whose norms are F32.
-GDN_DECODE_TABLE_ENTRY(verify_gdn_fused_table64, 16, 48, 128, 10240, 16640, q4sg::Table64, bfloat)
-GDN_DECODE_TABLE_ENTRY(verify_gdn_fused_table64_vh32, 16, 32, 128, 8192, 12544, q4sg::Table64, bfloat)
-GDN_DECODE_ENTRY(verify_gdn_fused_f32, 16, 48, 128, 10240, 16640, float)
-GDN_DECODE_ENTRY(verify_gdn_fused_vh32_f32, 16, 32, 128, 8192, 12544, float)
-GDN_DECODE_TABLE_ENTRY(verify_gdn_fused_table16_f32, 16, 48, 128, 10240, 16640, gguf_sg::Table16, float)
-GDN_DECODE_TABLE_ENTRY(verify_gdn_fused_table16_vh32_f32, 16, 32, 128, 8192, 12544, gguf_sg::Table16, float)
+GDN_DECODE_TABLE_ENTRY(verify_gdn_fused_table64, 16, 48, 128, 10240, 16640, q4sg::Table64, bfloat, true)
+GDN_DECODE_TABLE_ENTRY(verify_gdn_fused_table64_vh32, 16, 32, 128, 8192, 12544, q4sg::Table64, bfloat, true)
+GDN_DECODE_ENTRY(verify_gdn_fused_f32, 16, 48, 128, 10240, 16640, float, true)
+GDN_DECODE_ENTRY(verify_gdn_fused_vh32_f32, 16, 32, 128, 8192, 12544, float, true)
+GDN_DECODE_TABLE_ENTRY(verify_gdn_fused_table16_f32, 16, 48, 128, 10240, 16640, gguf_sg::Table16, float, true)
+GDN_DECODE_TABLE_ENTRY(verify_gdn_fused_table16_vh32_f32, 16, 32, 128, 8192, 12544, gguf_sg::Table16, float, true)
+// SPLASH_GDN_SCAN_NOSTORE (ops/GDN.cpp): the VH48 scans without their stores.
+GDN_DECODE_ENTRY(verify_gdn_fused_nostore, 16, 48, 128, 10240, 16640, bfloat, false)
+GDN_DECODE_TABLE_ENTRY(verify_gdn_fused_table64_nostore, 16, 48, 128, 10240, 16640, q4sg::Table64, bfloat, false)
+GDN_DECODE_ENTRY(verify_gdn_fused_f32_nostore, 16, 48, 128, 10240, 16640, float, false)
+GDN_DECODE_TABLE_ENTRY(verify_gdn_fused_table16_f32_nostore, 16, 48, 128, 10240, 16640, gguf_sg::Table16, float, false)
 // fastkernel's GDN_FUSED_SUMS (one lane, grid {48, 1}): verify_gdn_fused,
 // then the split-K out-projection's fp32 sum of each row's 64-input group,
 // [group][row], in decode_linear_q4_split_sums' order: lane and lane + 32,
 // then simd_sum. The gate left each simdgroup's gated row in shared.rows,
 // and each lane reads only the elements it wrote.
-kernel void verify_gdn_fused_split_sums(GDN_DECODE_BUFFERS(bfloat),
-    device float *group_sums [[buffer(17)]],
-    constant GDNDecodeBatchParams &params [[buffer(18)]], GDN_DECODE_THREADS) {
-  GDN_DECODE_BODY(16, 48, 128, 10240, 16640, nullptr, nullptr, q4sg::Table64)
-  simdgroup_barrier(mem_flags::mem_threadgroup);
-  const uint head = gdn_output_head<16, 48>(group.x, params.tiled_heads != 0);
-  for (uint g = 0; g < 2; ++g) {
-    const uint local = simd_group * 128 + g * 64 + lane;
-    const float sum = simd_sum(float(shared.rows[local]) + float(shared.rows[local + 32]));
-    if (lane == 0)
-      group_sums[(head * 2 + g) * SPLASH_TARGET_VERIFY_ROWS + simd_group] = sum;
-  }
+#define GDN_FUSED_SPLIT_SUMS(Name, StoreState)                                              \
+kernel void Name(GDN_DECODE_BUFFERS(bfloat),                                                \
+    device float *group_sums [[buffer(17)]],                                                \
+    constant GDNDecodeBatchParams &params [[buffer(18)]], GDN_DECODE_THREADS) {             \
+  GDN_DECODE_BODY(16, 48, 128, 10240, 16640, nullptr, nullptr, q4sg::Table64, StoreState)   \
+  simdgroup_barrier(mem_flags::mem_threadgroup);                                            \
+  const uint head = gdn_output_head<16, 48>(group.x, params.tiled_heads != 0);              \
+  for (uint g = 0; g < 2; ++g) {                                                            \
+    const uint local = simd_group * 128 + g * 64 + lane;                                    \
+    const float sum = simd_sum(float(shared.rows[local]) + float(shared.rows[local + 32])); \
+    if (lane == 0)                                                                          \
+      group_sums[(head * 2 + g) * SPLASH_TARGET_VERIFY_ROWS + simd_group] = sum;            \
+  }                                                                                         \
 }
+GDN_FUSED_SPLIT_SUMS(verify_gdn_fused_split_sums, true)
+GDN_FUSED_SPLIT_SUMS(verify_gdn_fused_split_sums_nostore, false)
+#undef GDN_FUSED_SPLIT_SUMS
 #undef GDN_DECODE_ENTRY
 #undef GDN_DECODE_TABLE_ENTRY
 #undef GDN_DECODE_BODY

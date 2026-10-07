@@ -66,6 +66,21 @@ struct GdnPrefillBuffers final {
   metal::MetalBuffer hidden;
 };
 
+// SPLASH_GDN_DEFER (fastkernel): a B1 lane's recurrent commit deferred into
+// its next value-parts scan. `rows` pending rows (the previous cycle's
+// retained rows: `mixed`, `decay` and `beta` are that cycle's lane slot of this
+// layer) replay from `base` (the lane's next cell) into its current cell
+// before the scan's own rows; with rows 0, `base` is the current cell and
+// nothing replays.
+struct GdnDeferScan final {
+  bool on = false;
+  uint32_t rows = 0;
+  metal::MetalBuffer base{};
+  metal::MetalBuffer mixed{};
+  metal::MetalBuffer decay{};
+  metal::MetalBuffer beta{};
+};
+
 struct GdnDecodeBuffers final {
   metal::MetalBuffer packed;
   metal::MetalBuffer convolutionWeights;
@@ -79,6 +94,18 @@ struct GdnDecodeBuffers final {
   NormWeights mixerNorm;
   metal::MetalBuffer hidden;
   LinearScratch linearScratch{};
+  GdnDeferScan defer{};
+};
+
+// SPLASH_GDN_DEFER: a pending recurrent commit no deferred scan takes. The
+// verify scratch whole (every layer's lane slots), the lane's next cell (the
+// state before the pending rows) and its current cell (where they land).
+struct GdnFlushBuffers final {
+  metal::MetalBuffer mixed;
+  metal::MetalBuffer decay;
+  metal::MetalBuffer beta;
+  metal::MetalBuffer base;
+  metal::MetalBuffer out;
 };
 
 struct GdnCommitBuffers final {
@@ -138,6 +165,18 @@ public:
   static void addCommit(metal::CommandGraph &graph, GdnCommitBuffers buffers,
                         GdnShape shape, uint32_t layers, uint32_t lanes,
                         GdnStateStrides state);
+  // SPLASH_GDN_DEFER: whether a one-lane decode with this out-projection
+  // input takes the value-parts route, which alone can defer its commit.
+  [[nodiscard]] static bool deferRoute(GdnShape shape, LinearInput input) noexcept;
+  // SPLASH_GDN_DEFER: a deferred B1 cycle's commit, the convolution carry
+  // only (the recurrent rows wait in the verify scratch).
+  static void addCommitConv(metal::CommandGraph &graph, GdnCommitBuffers buffers,
+                            GdnShape shape, uint32_t layers, GdnStateStrides state);
+  // SPLASH_GDN_DEFER: the pending recurrent commit of one lane: `rows` rows
+  // at lane slot `slot` of every layer, replayed from the next cell into the
+  // current one.
+  static void addFlush(metal::CommandGraph &graph, GdnFlushBuffers buffers, GdnShape shape,
+                       uint32_t layers, uint32_t rows, uint32_t slot, GdnStateStrides state);
   // fastkernel's wide lookup: one request's tiles x 8 rows (the grouped head
   // order and bf16 norm weights only). The scans write their recurrent rows
   // into the hidden rows, which the gate then rewrites in place.

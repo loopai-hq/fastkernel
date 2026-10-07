@@ -91,6 +91,24 @@ void requireStates(const GdnShape &shape, GdnStateStrides strides, uint32_t laye
   return enabled;
 }
 
+// SPLASH_GDN_SCAN_NOSTORE (default on; exact; read per call, so an
+// in-process A/B can toggle it between cycles): every VH48 verify scan (the
+// value parts, the fused split sums and the batch scans with or without a
+// table) stores neither its eight-row recurrent state nor the convolution
+// carry, and the commit replays every lane's retained rows even when all
+// eight are kept (verify_gdn_commit_replay). The replay's state is the
+// scan's bit for bit (checked on 8-token cycles
+// at B1 and B2). Per lane, a cycle that keeps fewer than eight rows skips one
+// store of the whole recurrent state (151 MB on the 27B); one that keeps all
+// eight replays them instead of keeping the store. The scans and the commit
+// take the same predicate.
+[[nodiscard]] bool scanSkipsStore(KernelLayout kernel) noexcept {
+  return kernel == KernelLayout::Value48 && metal::envSwitch("SPLASH_GDN_SCAN_NOSTORE");
+}
+[[nodiscard]] std::string storeSuffix(std::string name, KernelLayout kernel) {
+  return scanSkipsStore(kernel) ? name + "_nostore" : name;
+}
+
 // fastkernel's GDN kernels gate the grouped head order with bf16 norm weights.
 void requireForkVariant(const GdnDecodeBuffers &buffers, const GdnShape &shape, GdnHeadOrder order,
                         const char *what) {
@@ -186,6 +204,8 @@ PreparedInput GDN::addDecode(metal::CommandGraph &graph, GdnDecodeBuffers buffer
                                     state.convolutionLayerBytes,
                                     state.recurrentLayerBytes,
                                     state.convolutionStateBytes};
+  if (buffers.defer.on && (lanes != 1 || !deferRoute(shape, input)))
+    throw std::invalid_argument("a deferred GDN commit takes the one-lane value-parts route");
   if (input == LinearInput::GroupSums) {
     if (lanes != 1 || kernel != KernelLayout::Value48 || buffers.currentStates.size() != SPLASH_MAXIMUM_BATCH_WIDTH ||
         buffers.nextStates.size() != SPLASH_MAXIMUM_BATCH_WIDTH)
@@ -195,11 +215,28 @@ PreparedInput GDN::addDecode(metal::CommandGraph &graph, GdnDecodeBuffers buffer
     // Each row's fp32 sum per 64 outputs, [group][row].
     requireBytes(buffers.linearScratch.sums, valueWidth(shape) / 64 * rows * sizeof(float), "GDN split sums");
     if (valueParts4Enabled()) {
-      graph.add("verify_gdn_value_parts4_scan",
-                {buffers.packed, buffers.convolutionWeights, buffers.currentStates[0], buffers.nextStates[0],
-                 buffers.mixed, buffers.decayWeights, buffers.timeBias, buffers.decay, buffers.beta,
-                 buffers.hidden},
-                params, {uint64_t{shape.valueHeads} * 4, 1, 1});
+      if (const GdnDeferScan &defer = buffers.defer; defer.on) {
+        if (defer.rows > SPLASH_TARGET_VERIFY_ROWS)
+          throw std::invalid_argument("too many pending GDN rows");
+        requireBytes(defer.base, state.convolutionStateBytes + uint64_t{layer + 1} * state.recurrentLayerBytes,
+                     "GDN deferred base cell");
+        requireBytes(defer.mixed, SPLASH_TARGET_VERIFY_ROWS * shape.convolutionDimension * 2, "GDN pending mixed");
+        requireGates(shape, SPLASH_TARGET_VERIFY_ROWS, defer.decay, defer.beta);
+        const GDNDeferParams deferParams{layer, defer.rows, 0, order == GdnHeadOrder::Tiled,
+                                         state.convolutionLayerBytes, state.recurrentLayerBytes,
+                                         state.convolutionStateBytes};
+        graph.add("verify_gdn_value_parts4_scan_defer",
+                  {buffers.packed, buffers.convolutionWeights, buffers.currentStates[0], defer.base,
+                   buffers.mixed, buffers.decayWeights, buffers.timeBias, buffers.decay, buffers.beta,
+                   buffers.hidden, defer.mixed, defer.decay, defer.beta},
+                  deferParams, {uint64_t{shape.valueHeads} * 4, 1, 1});
+      } else {
+        graph.add(storeSuffix("verify_gdn_value_parts4_scan", kernel),
+                  {buffers.packed, buffers.convolutionWeights, buffers.currentStates[0], buffers.nextStates[0],
+                   buffers.mixed, buffers.decayWeights, buffers.timeBias, buffers.decay, buffers.beta,
+                   buffers.hidden},
+                  params, {uint64_t{shape.valueHeads} * 4, 1, 1});
+      }
       graph.add("verify_gdn_value_parts4_finalize",
                 {buffers.packed, buffers.mixerNorm.buffer, buffers.hidden, buffers.linearScratch.sums},
                 {shape.valueHeads, 1, 1});
@@ -210,7 +247,8 @@ PreparedInput GDN::addDecode(metal::CommandGraph &graph, GdnDecodeBuffers buffer
       bindings.insert(bindings.end(), {buffers.mixed, buffers.decayWeights, buffers.timeBias, buffers.decay,
                                        buffers.beta, buffers.mixerNorm.buffer, buffers.hidden,
                                        buffers.linearScratch.sums});
-      graph.add("verify_gdn_fused_split_sums", std::move(bindings), params, {shape.valueHeads, 1, 1});
+      graph.add(storeSuffix("verify_gdn_fused_split_sums", kernel), std::move(bindings), params,
+                {shape.valueHeads, 1, 1});
     }
     return {buffers.hidden, LinearInput::GroupSums};
   }
@@ -230,19 +268,20 @@ PreparedInput GDN::addDecode(metal::CommandGraph &graph, GdnDecodeBuffers buffer
   if (prepare)
     bindings.insert(bindings.end(), {buffers.linearScratch.input, buffers.linearScratch.sums});
   const std::string name = std::string("verify_gdn_fused") + tableSuffix(input) + kernelName(kernel, "", "_vh32");
-  graph.add(normKernel(name, buffers.mixerNorm, shape.headDimension), std::move(bindings), params,
-            {shape.valueHeads, lanes, 1});
+  graph.add(storeSuffix(normKernel(name, buffers.mixerNorm, shape.headDimension), kernel), std::move(bindings),
+            params, {shape.valueHeads, lanes, 1});
   if (!prepare) return {};
   return {buffers.hidden, input};
 }
 
-void GDN::addCommit(metal::CommandGraph &graph, GdnCommitBuffers buffers,
-                    GdnShape shape, uint32_t layers, uint32_t lanes,
-                    GdnStateStrides state) {
+namespace {
+
+// The commits of every lane (verify_gdn_commit and its variants).
+void addCommitAs(metal::CommandGraph &graph, GdnCommitBuffers buffers, GdnShape shape, uint32_t layers,
+                 uint32_t lanes, GdnStateStrides state, const char *name) {
   if (!layers || !lanes || lanes > SPLASH_MAXIMUM_BATCH_WIDTH ||
       !state.valid())
     throw std::invalid_argument("invalid GDN commit geometry");
-  const KernelLayout kernel = kernelShape(shape);
   // The decoded rows of lane l in layer y start at row (y x the maximum batch
   // width + l) x 8 of the packed, mixed and gate rows. A lane replays at most
   // the 7 rows it retains (all 8 leave the decoded state) and carries its
@@ -263,10 +302,46 @@ void GDN::addCommit(metal::CommandGraph &graph, GdnCommitBuffers buffers,
   const GDNBatchCommitParams params{state.convolutionLayerBytes,
                                     state.recurrentLayerBytes,
                                     state.convolutionStateBytes};
-  graph.add(kernelName(kernel, "verify_gdn_commit",
-                       "verify_gdn_commit_vh32"),
-            std::move(bindings), params,
-            {shape.valueHeads, layers, lanes});
+  graph.add(name, std::move(bindings), params, {shape.valueHeads, layers, lanes});
+}
+
+} // namespace
+
+void GDN::addCommit(metal::CommandGraph &graph, GdnCommitBuffers buffers,
+                    GdnShape shape, uint32_t layers, uint32_t lanes,
+                    GdnStateStrides state) {
+  const KernelLayout kernel = kernelShape(shape);
+  addCommitAs(graph, std::move(buffers), shape, layers, lanes, state,
+              scanSkipsStore(kernel) ? "verify_gdn_commit_replay"
+                                     : kernelName(kernel, "verify_gdn_commit", "verify_gdn_commit_vh32"));
+}
+
+bool GDN::deferRoute(GdnShape shape, LinearInput input) noexcept {
+  return kernelShape(shape) == KernelLayout::Value48 && input == LinearInput::GroupSums && valueParts4Enabled();
+}
+
+void GDN::addCommitConv(metal::CommandGraph &graph, GdnCommitBuffers buffers, GdnShape shape, uint32_t layers,
+                        GdnStateStrides state) {
+  if (kernelShape(shape) != KernelLayout::Value48)
+    throw std::invalid_argument("a deferred GDN commit takes the VH48 variant");
+  addCommitAs(graph, std::move(buffers), shape, layers, 1, state, "verify_gdn_commit_conv");
+}
+
+void GDN::addFlush(metal::CommandGraph &graph, GdnFlushBuffers buffers, GdnShape shape, uint32_t layers,
+                   uint32_t rows, uint32_t slot, GdnStateStrides state) {
+  if (kernelShape(shape) != KernelLayout::Value48 || !layers || !rows || rows > SPLASH_TARGET_VERIFY_ROWS ||
+      slot >= SPLASH_MAXIMUM_BATCH_WIDTH || !state.valid())
+    throw std::invalid_argument("invalid deferred GDN flush");
+  const uint64_t scratchRows = uint64_t{layers} * SPLASH_MAXIMUM_BATCH_WIDTH * SPLASH_TARGET_VERIFY_ROWS;
+  requireBytes(buffers.mixed, scratchRows * shape.convolutionDimension * 2, "GDN pending mixed");
+  requireGates(shape, scratchRows, buffers.decay, buffers.beta);
+  const uint64_t cell = state.convolutionStateBytes + uint64_t{layers} * state.recurrentLayerBytes;
+  requireBytes(buffers.base, cell, "GDN flush base cell");
+  requireBytes(buffers.out, cell, "GDN flush cell");
+  const GDNDeferParams params{0, rows, slot, 0, state.convolutionLayerBytes, state.recurrentLayerBytes,
+                              state.convolutionStateBytes};
+  graph.add("verify_gdn_commit_flush", {buffers.mixed, buffers.decay, buffers.beta, buffers.base, buffers.out},
+            params, {shape.valueHeads, layers, 1});
 }
 
 void GDN::addDecode16(metal::CommandGraph &graph, GdnDecodeBuffers buffers,

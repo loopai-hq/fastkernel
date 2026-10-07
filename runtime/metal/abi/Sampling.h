@@ -98,6 +98,17 @@ struct TargetVocabularyRange {
 static_assert(sizeof(TargetVocabularyRange) == 8,
               "Target vocabulary ranges are 8 bytes on both sides");
 
+// SPLASH_SAMPLER_TOPK32 (fork): a sampled lane that keeps at most this many
+// tokens by top-k, and none by min-p, is searched from each shard's first
+// this many tokens in the order of the logits, whose ids a row's draw
+// ranges hold until its draw (decode_sample_mass_top32_sharded).
+#define SPLASH_SAMPLER_TOP_TOKENS 32u
+
+static_assert(SPLASH_TARGET_SAMPLING_SHARDS * SPLASH_SAMPLER_TOP_TOKENS *
+                      sizeof(uint32_t) <=
+                  SPLASH_TARGET_VOCABULARY_RANGES * sizeof(TargetVocabularyRange),
+              "A row's draw ranges hold its shards' top token ids");
+
 // SPLASH_BLOCK_VERIFY (block verification, Sun et al. 2024): a drafted verify
 // row's target probability of each of its draft candidates, in the draft's
 // candidate order (0 for a candidate listed again after its first entry), and

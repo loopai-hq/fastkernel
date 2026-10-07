@@ -70,6 +70,10 @@ inline void gdn_value_parts4_gates(
   local_decay = fast::exp(a_scale[value_head] * float(softplus));
 }
 
+// StoreState = false (SPLASH_GDN_SCAN_NOSTORE): neither the convolution carry
+// nor the recurrent state of all eight rows is stored; the commit replays
+// every lane's retained rows, fully retained ones too.
+template <bool StoreState = true>
 inline void gdn_value_parts4_prologue(
     device const bfloat *packed, device const bfloat *conv_weights,
     device const bfloat *conv_state_in, device bfloat *conv_state_out,
@@ -140,7 +144,7 @@ inline void gdn_value_parts4_prologue(
       decay[gate_index] = token_decay;
     }
   }
-  if (part == 0 && simd_group < 3) {
+  if (StoreState && part == 0 && simd_group < 3) {
     const uint row = simd_group;
     for (uint g = 0; g < Groups; ++g) {
       conv_state_out[row * ConvDim + v_channel + 32 * g] =
@@ -158,13 +162,26 @@ inline void gdn_value_parts4_prologue(
   }
 }
 
+// SPLASH_GDN_DEFER: the previous B1 cycle's retained rows, which a deferred
+// scan replays first (verify_gdn_value_parts4_scan_defer).
+struct GdnPendingRows {
+  device const bfloat *mixed;  // its q/k/v rows, ConvDim apart
+  device const float *decay;   // [row][value head]
+  device const bfloat *beta;   // [row][value head]
+  device float *committed;     // where the replayed state goes
+  uint count;                  // 0: nothing pending
+};
+
+template <bool StoreState = true, bool Defer = false>
 inline void gdn_value_parts4_scan(
     device const float *state_in, device float *state_out,
     device bfloat *recurrent, threadgroup const bfloat *queries,
     threadgroup const bfloat *keys, threadgroup const bfloat *values,
     threadgroup const float *decay, threadgroup const bfloat *beta,
-    uint value_head, uint part, uint lane, uint simd_group) {
+    uint value_head, uint part, uint lane, uint simd_group,
+    GdnPendingRows pending = {}) {
   constexpr uint ValueHeads = 48, HeadDim = 128, Rows = 8;
+  constexpr uint KeyWidth = 16 * HeadDim, ConvDim = 10240, HeadsPerKey = 3;
   constexpr uint RowsInFlight = 2, BatchesPerPart = 4;
   const uint first_batch = part * BatchesPerPart;
   for (uint batch = first_batch; batch < first_batch + BatchesPerPart;
@@ -179,6 +196,37 @@ inline void gdn_value_parts4_scan(
       for (uint i = 0; i < 4; ++i)
         state[r][i] = state_in[state_base[r] + i];
     }
+    // The pending rows replay with verify_gdn_commit's arithmetic (state
+    // decay, memory, delta, update, per column), so the committed state is
+    // the commit's bit for bit; it is stored, then this cycle scans from it.
+    for (uint token = 0; Defer && token < pending.count; ++token) {
+      const float d = pending.decay[token * ValueHeads + value_head];
+      const float b = float(pending.beta[token * ValueHeads + value_head]);
+      device const bfloat *key = pending.mixed + ulong(token) * ConvDim + KeyWidth +
+                                 (value_head / HeadsPerKey) * HeadDim + lane * 4;
+      float memory[RowsInFlight];
+      for (uint r = 0; r < RowsInFlight; ++r) {
+        memory[r] = 0.0f;
+        for (uint i = 0; i < 4; ++i) {
+          state[r][i] *= d;
+          memory[r] += state[r][i] * float(key[i]);
+        }
+        memory[r] = simd_sum(memory[r]);
+      }
+      for (uint r = 0; r < RowsInFlight; ++r) {
+        const float delta =
+            (float(pending.mixed[ulong(token) * ConvDim + 2 * KeyWidth +
+                                 value_head * HeadDim + value_dim[r]]) -
+             memory[r]) *
+            b;
+        for (uint i = 0; i < 4; ++i)
+          state[r][i] += float(key[i]) * delta;
+      }
+    }
+    if (Defer && pending.count)
+      for (uint r = 0; r < RowsInFlight; ++r)
+        for (uint i = 0; i < 4; ++i)
+          pending.committed[state_base[r] + i] = state[r][i];
     for (uint token = 0; token < Rows; ++token) {
       const float d = decay[token];
       const float b = float(beta[token]);
@@ -209,51 +257,107 @@ inline void gdn_value_parts4_scan(
           recurrent[(ulong(token) * ValueHeads + value_head) * HeadDim +
                     value_dim[r]] = bfloat(result[r]);
     }
-    for (uint r = 0; r < RowsInFlight; ++r)
-      for (uint i = 0; i < 4; ++i)
-        state_out[state_base[r] + i] = state[r][i];
+    if (StoreState)
+      for (uint r = 0; r < RowsInFlight; ++r)
+        for (uint i = 0; i < 4; ++i)
+          state_out[state_base[r] + i] = state[r][i];
   }
 }
 
 // Grid 4 x 48: value head group / 4, part group % 4. Writes the recurrent
 // rows into gdn_hidden.
-kernel void verify_gdn_value_parts4_scan(
+#define GDN_VALUE_PARTS4_SCAN(Name, StoreState)                                             \
+kernel void Name(                                                                           \
+    device const bfloat *packed [[buffer(0)]],                                              \
+    device const bfloat *conv_weights [[buffer(1)]],                                        \
+    device const uchar *current0 [[buffer(2)]],                                             \
+    device uchar *next0 [[buffer(3)]], device bfloat *mixed [[buffer(4)]],                  \
+    device const float *a_scale [[buffer(5)]],                                              \
+    device const bfloat *dt_bias [[buffer(6)]],                                             \
+    device float *decay [[buffer(7)]], device bfloat *beta [[buffer(8)]],                   \
+    device bfloat *gdn_hidden [[buffer(9)]],                                                \
+    constant GDNDecodeBatchParams &params [[buffer(10)]],                                   \
+    uint group [[threadgroup_position_in_grid]],                                            \
+    uint lane [[thread_index_in_simdgroup]],                                                \
+    uint simd_group [[simdgroup_index_in_threadgroup]]) {                                   \
+  constexpr uint PackedWidth = 16640;                                                       \
+  const uint value_head = group / 4;                                                        \
+  const uint part = group % 4;                                                              \
+  device const bfloat *conv_in = reinterpret_cast<device const bfloat *>(                   \
+      current0 + ulong(params.layer) * params.conv_layer_bytes);                            \
+  device bfloat *conv_out = reinterpret_cast<device bfloat *>(                              \
+      next0 + ulong(params.layer) * params.conv_layer_bytes);                               \
+  device const float *state_in = reinterpret_cast<device const float *>(                    \
+      current0 + params.convolution_state_bytes +                                           \
+      ulong(params.layer) * params.recurrent_layer_bytes);                                  \
+  device float *state_out = reinterpret_cast<device float *>(                               \
+      next0 + params.convolution_state_bytes +                                              \
+      ulong(params.layer) * params.recurrent_layer_bytes);                                  \
+  threadgroup bfloat queries[8 * 128], keys[8 * 128], values[8 * 128];                      \
+  threadgroup float local_decay[8];                                                         \
+  threadgroup bfloat local_beta[8];                                                         \
+  gdn_value_parts4_prologue<StoreState>(                                                    \
+      packed, conv_weights, conv_in, conv_out, mixed, a_scale, dt_bias, decay,              \
+      beta, PackedWidth, value_head, part, lane, simd_group, queries,                       \
+      keys, values, local_decay, local_beta);                                               \
+  threadgroup_barrier(mem_flags::mem_threadgroup);                                          \
+  gdn_value_parts4_scan<StoreState>(state_in, state_out, gdn_hidden, queries, keys, values, \
+                        local_decay, local_beta, value_head, part, lane,                    \
+                        simd_group);                                                        \
+}
+
+GDN_VALUE_PARTS4_SCAN(verify_gdn_value_parts4_scan, true)
+// SPLASH_GDN_SCAN_NOSTORE: the B1 scan without its stores (ops/GDN.cpp).
+GDN_VALUE_PARTS4_SCAN(verify_gdn_value_parts4_scan_nostore, false)
+#undef GDN_VALUE_PARTS4_SCAN
+
+// SPLASH_GDN_DEFER (ops/GDN.cpp): the value-parts scan of a deferred B1
+// cycle. With params.count pending rows (the previous cycle's retained rows,
+// at the pending_* lane slot) it first replays them from rec_in (the lane's
+// next cell) into the lane's current cell, then scans its own eight rows from
+// that state; with none it scans from rec_in (then the current cell). Its own
+// rows store no state and no convolution carry, as under
+// SPLASH_GDN_SCAN_NOSTORE: a verify_gdn_commit_conv dispatch commits the
+// carry and the next deferred scan (or a flush) the recurrent rows.
+kernel void verify_gdn_value_parts4_scan_defer(
     device const bfloat *packed [[buffer(0)]],
     device const bfloat *conv_weights [[buffer(1)]],
-    device const uchar *current0 [[buffer(2)]],
-    device uchar *next0 [[buffer(3)]], device bfloat *mixed [[buffer(4)]],
+    device uchar *current0 [[buffer(2)]],
+    device const uchar *rec_in [[buffer(3)]],
+    device bfloat *mixed [[buffer(4)]],
     device const float *a_scale [[buffer(5)]],
     device const bfloat *dt_bias [[buffer(6)]],
     device float *decay [[buffer(7)]], device bfloat *beta [[buffer(8)]],
     device bfloat *gdn_hidden [[buffer(9)]],
-    constant GDNDecodeBatchParams &params [[buffer(10)]],
+    device const bfloat *pending_mixed [[buffer(10)]],
+    device const float *pending_decay [[buffer(11)]],
+    device const bfloat *pending_beta [[buffer(12)]],
+    constant GDNDeferParams &params [[buffer(13)]],
     uint group [[threadgroup_position_in_grid]],
     uint lane [[thread_index_in_simdgroup]],
     uint simd_group [[simdgroup_index_in_threadgroup]]) {
   constexpr uint PackedWidth = 16640;
   const uint value_head = group / 4;
   const uint part = group % 4;
-  device const bfloat *conv_in = reinterpret_cast<device const bfloat *>(
+  device bfloat *conv = reinterpret_cast<device bfloat *>(
       current0 + ulong(params.layer) * params.conv_layer_bytes);
-  device bfloat *conv_out = reinterpret_cast<device bfloat *>(
-      next0 + ulong(params.layer) * params.conv_layer_bytes);
-  device const float *state_in = reinterpret_cast<device const float *>(
-      current0 + params.convolution_state_bytes +
-      ulong(params.layer) * params.recurrent_layer_bytes);
-  device float *state_out = reinterpret_cast<device float *>(
-      next0 + params.convolution_state_bytes +
-      ulong(params.layer) * params.recurrent_layer_bytes);
+  const ulong recurrent =
+      params.convolution_state_bytes + ulong(params.layer) * params.recurrent_layer_bytes;
+  device const float *state_in = reinterpret_cast<device const float *>(rec_in + recurrent);
   threadgroup bfloat queries[8 * 128], keys[8 * 128], values[8 * 128];
   threadgroup float local_decay[8];
   threadgroup bfloat local_beta[8];
-  gdn_value_parts4_prologue(
-      packed, conv_weights, conv_in, conv_out, mixed, a_scale, dt_bias, decay,
-      beta, PackedWidth, value_head, part, lane, simd_group, queries,
-      keys, values, local_decay, local_beta);
+  // No carry is stored (StoreState = false), so `conv` is only read.
+  gdn_value_parts4_prologue<false>(
+      packed, conv_weights, conv, conv, mixed, a_scale, dt_bias, decay, beta,
+      PackedWidth, value_head, part, lane, simd_group, queries, keys, values,
+      local_decay, local_beta);
   threadgroup_barrier(mem_flags::mem_threadgroup);
-  gdn_value_parts4_scan(state_in, state_out, gdn_hidden, queries, keys, values,
-                        local_decay, local_beta, value_head, part, lane,
-                        simd_group);
+  gdn_value_parts4_scan<false, true>(
+      state_in, nullptr, gdn_hidden, queries, keys, values, local_decay,
+      local_beta, value_head, part, lane, simd_group,
+      {pending_mixed, pending_decay, pending_beta,
+       reinterpret_cast<device float *>(current0 + recurrent), params.count});
 }
 
 // Grid 48: the scan's rows in gdn_hidden gated in place, then the split-K

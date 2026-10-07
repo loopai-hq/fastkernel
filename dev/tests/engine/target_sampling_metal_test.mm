@@ -27,6 +27,10 @@
 // draw the same, export each drafted row's candidate probabilities, and
 // accept and correct as a double-precision evaluation of the block rule
 // (Sun et al. 2024) on the reference distributions.
+// SPLASH_SAMPLER_TOPK32 (fork, default on): the whole suite runs with it. A
+// selection whose sampled lanes keep at most 32 tokens by top-k and none by
+// min-p must leave every byte the whole-vocabulary search leaves, with either
+// rule, also when ties straddle the 32nd token and for wide prompt lookup.
 #include "TestBuffers.hpp"
 #include "TestChecks.hpp"
 #include "metal/MetalBackend.hpp"
@@ -39,7 +43,9 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -2649,6 +2655,263 @@ void lookupDistribution(MetalBackend &backend, uint32_t rows, uint32_t trials) {
   }
 }
 
+// SPLASH_SAMPLER_TOPK32, which a selection reads as it is added: the
+// top-token search on (its default) or off (every row searched over the
+// whole vocabulary). Selections are added with it set, and it is restored to
+// its default before anything else runs.
+void searchTopTokens(bool on) {
+  if (on ? unsetenv("SPLASH_SAMPLER_TOPK32") != 0 : setenv("SPLASH_SAMPLER_TOPK32", "0", 1) != 0)
+    throw std::runtime_error("cannot set SPLASH_SAMPLER_TOPK32");
+}
+
+// Every byte of the buffers, in order.
+std::vector<std::byte> bytesOf(std::initializer_list<MetalBuffer> buffers) {
+  std::vector<std::byte> bytes;
+  for (const MetalBuffer &buffer : buffers) {
+    const auto *data = static_cast<const std::byte *>(buffer.contents());
+    bytes.insert(bytes.end(), data, data + buffer.sizeBytes());
+  }
+  return bytes;
+}
+
+bool searchesTopTokens(const CommandGraph &graph) {
+  return std::any_of(graph.dispatches().begin(), graph.dispatches().end(), [](const auto &dispatch) {
+    return dispatch.pipelineName == "decode_sample_vocabulary_search_top32";
+  });
+}
+
+// sampling.metal's logit_key: the order of the logits as an unsigned key.
+uint32_t logitKey(float value) {
+  uint32_t bits = std::bit_cast<uint32_t>(value);
+  bits = (bits << 1) ? bits : 0U;
+  return (bits & 0x80000000U) ? ~bits : bits | 0x80000000U;
+}
+
+// SPLASH_SAMPLER_TOPK32: a batch whose sampled lanes keep at most 32 tokens
+// by top-k and none by min-p searches its rows from the shards' top tokens.
+// From the same inputs and uniforms, every byte its selection and acceptance
+// leave must be the whole-vocabulary search's: shard masses, records, draws,
+// draw ranges, candidate rows, argmaxes, counts and corrections. Rows take
+// every shape (Ties cuts inside ties and puts -inf at random tokens); top_k
+// runs from 1 to 32, nuclei from 0 to nearly 1, temperatures from 0.3 to 1.5;
+// constrained rows admit 5, 20, 32, 33 or most tokens, so top_k may keep
+// every admitted token; a stop token leads some rows; and some rows are not
+// finite, which the search leaves to the whole-vocabulary arithmetic. Greedy
+// lanes join some batches, and a min_p lane keeps its batch on the
+// whole-vocabulary search.
+void topTokensMatchWholeVocabulary(MetalBackend &backend, uint32_t vocabulary, uint32_t trials) {
+  const Sampling sampling(vocabulary);
+  Random random(0x746f7033 + vocabulary);
+  const std::array<SamplingPolicy, 9> policyPool{
+      SamplingPolicy{20, 0.9F, 0.95F, false},       SamplingPolicy{32, 1.0F, 1.0F, true},
+      SamplingPolicy{1, 0.7F, 0.5F, false},         SamplingPolicy{31, 1.5F, 0.999F, false, true},
+      SamplingPolicy{2, 0.3F, 0.0F, true},          SamplingPolicy{32, 0.6F, 0.8F, true, true},
+      SamplingPolicy{20, 1.0F, 0.95F, false},       SamplingPolicy{1, 0.0F, 1.0F, false},
+      SamplingPolicy{20, 1.0F, 0.95F, false, false, {}, 0.05F}};
+  constexpr std::array<uint32_t, 5> kAdmitted{5, 20, 32, 33, 0};  // 0: about half the vocabulary
+  uint32_t searched = 0;
+  for (uint32_t trial = 0; trial < trials; ++trial) {
+    const std::string label = "top tokens vocabulary " + std::to_string(vocabulary) + " trial " + std::to_string(trial);
+    const uint32_t lanes = 1 + trial % kLanes;
+    const Batch batch = makeBatch(backend, vocabulary, lanes);
+    std::vector<SamplingPolicy> policies;
+    for (uint32_t lane = 0; lane < lanes; ++lane)
+      policies.push_back(policyPool[(trial * 7 + lane * 3) % (trial % 5 == 4 ? 9 : 8)]);
+    const uint32_t admitted = kAdmitted[trial % kAdmitted.size()];
+    for (uint32_t maskRow = 0; maskRow < lanes * (kRows + 1); ++maskRow) {
+      uint32_t *mask = batch.masks() + uint64_t{maskRow} * batch.maskWords();
+      for (uint32_t word = 0; word < batch.maskWords(); ++word)
+        mask[word] = admitted ? 0U : 0xB6DB6DB6U ^ word ^ maskRow;
+      for (uint32_t index = 0; index < admitted; ++index) {
+        const uint32_t token = 3 + (index * 7919 + maskRow * 31 + trial) % (vocabulary - 3);
+        mask[token / 32] |= 1U << (token % 32);
+      }
+    }
+    for (uint32_t index = 0; index < batch.rows; ++index) {
+      fillShaped(batch.row(index), vocabulary, static_cast<Shape>((index + trial) % 4), random);
+      if (index % 3 == 1)
+        batch.row(index)[kStopTokens[0]] = 13.0F;
+    }
+    if (trial % 7 == 6) {
+      std::fill_n(batch.row(0), vocabulary, std::numeric_limits<float>::quiet_NaN());
+      batch.row(batch.rows - 1)[17] = INFINITY;
+    }
+    AcceptanceBuffers acceptance{allocate(backend, uint64_t{lanes} * kPositions * sizeof(uint32_t)),
+                                 batch.buffers.draftCandidates,
+                                 batch.buffers.draftProbabilities,
+                                 batch.buffers.vocabularyRows,
+                                 batch.buffers.uniforms,
+                                 batch.buffers.outputTokens,
+                                 allocate(backend, lanes * sizeof(uint32_t)),
+                                 allocate(backend, lanes * sizeof(uint32_t)),
+                                 batch.buffers,
+                                 allocate(backend, lanes * sizeof(BlockCorrectionRow))};
+    auto *proposed = static_cast<uint32_t *>(acceptance.proposedTokens.contents());
+    for (uint32_t lane = 0; lane < lanes; ++lane) {
+      for (uint32_t position = 0; position < kPositions; ++position) {
+        const uint32_t row = lane * kRows + position;
+        const uint32_t *mask =
+            policies[lane].constrained ? batch.masks() + (uint64_t{row} + lane + 1) * batch.maskWords() : nullptr;
+        std::vector<uint32_t> candidates =
+            referenceBest(batch.row(row), vocabulary, 2, {mask, policies[lane].excludesStopTokens});
+        candidates.push_back(3 + random.next() % (vocabulary - 3));
+        const uint32_t draft = candidates[random.next() % 8 < 6 ? 0 : candidates.size() - 1];
+        setDraft(batch, lane, position, candidates, draft, random);
+        proposed[lane * kPositions + position] = draft;
+      }
+      batch.inputTokens()[lane * kRows] = 7;
+      for (uint32_t uniform = 0; uniform < kUniforms; ++uniform)
+        batch.uniforms()[lane * kUniforms + uniform] = 0.5F * (random.unit() + 1.0F);
+    }
+    const auto outputs = [&] {
+      return bytesOf({batch.buffers.partialMasses, batch.buffers.vocabularyRows, batch.buffers.vocabularyRanges,
+                      batch.buffers.outputTokens, batch.buffers.candidateRows, batch.buffers.argmaxValues,
+                      batch.buffers.argmaxIndices, acceptance.retainedCounts, acceptance.acceptedCounts,
+                      acceptance.corrections});
+    };
+    // Every policy in the pool keeps at most 32 tokens by top-k.
+    const bool eligible =
+        std::any_of(policies.begin(), policies.end(), [](const SamplingPolicy &policy) { return policy.samples(); }) &&
+        std::none_of(policies.begin(), policies.end(), [](const SamplingPolicy &policy) { return policy.minP > 0.0F; });
+    const auto verify = [&](bool top) {
+      batch.poison();
+      for (const MetalBuffer &buffer : {acceptance.retainedCounts, acceptance.acceptedCounts, acceptance.corrections})
+        std::memset(buffer.contents(), 0xA5, buffer.sizeBytes());
+      CommandGraph graph;
+      searchTopTokens(top);
+      sampling.addVerify(graph, policies, batch.buffers, kStopTokens[0], kStopTokens[1], {});
+      const std::vector<uint32_t> maximumRetained(lanes, kRows);
+      sampling.addAcceptance(graph, acceptance, maximumRetained, policies, kStopTokens[0], kStopTokens[1]);
+      searchTopTokens(true);
+      require(searchesTopTokens(graph) == (top && eligible),
+              label + ": the top-token search ran where it should not, or not where it should");
+      searched += top && eligible ? 1U : 0U;
+      static_cast<void>(backend.submitCommandAsync(graph.dispatches()).wait());
+      return outputs();
+    };
+    require(verify(false) == verify(true),
+            label + ": a verify selection or its acceptance differs from the whole-vocabulary search");
+    // The first token after a prompt, from a row at an offset.
+    const auto initial = [&](bool top) {
+      batch.poison();
+      CommandGraph graph;
+      searchTopTokens(top);
+      sampling.addInitial(graph, policies, batch.buffers, trial % kRows, kStopTokens[0], kStopTokens[1], {});
+      searchTopTokens(true);
+      require(searchesTopTokens(graph) == (top && eligible),
+              label + ": the first token's top-token search ran where it should not, or not where it should");
+      static_cast<void>(backend.submitCommandAsync(graph.dispatches()).wait());
+      return outputs();
+    };
+    require(initial(false) == initial(true),
+            label + ": a first-token selection differs from the whole-vocabulary search");
+  }
+  require(searched * 2 >= trials, "top tokens: too few batches searched their top tokens");
+}
+
+// SPLASH_SAMPLER_TOPK32: ties at the 32nd token. Ten tokens lead and the
+// rest of the top-k ties: tokens spread over every shard, forty more down one
+// thread's column of one shard (that thread, its simdgroup and its shard
+// each keep only the first of them by id), and in a tie at 0 every other one
+// -0. Top-k ends on the tied token whose id ranks it there among the ties,
+// as the whole-vocabulary search does byte for byte, and the draws follow
+// the reference; so do nuclei that end inside the tie, and a tie of 3,040
+// tokens, which that search cuts in its tie branch.
+void topTokenTies(MetalBackend &backend) {
+  constexpr uint32_t vocabulary = 248320, kLeaders = 10;
+  const Sampling sampling(vocabulary);
+  const Batch batch = makeBatch(backend, vocabulary, 1);
+  struct Case final {
+    const char *name;
+    float tie;
+    uint32_t spread;
+    SamplingPolicy policy;
+  };
+  for (const Case &c : {Case{"top_k 32 in 140 ties", 2.0F, 100, {32, 1.0F, 1.0F, false}},
+                        Case{"top_k 20 in 140 ties at +-0", 0.0F, 100, {20, 0.7F, 1.0F, false}},
+                        Case{"top_k 32 in 140 ties, nucleus inside", 2.0F, 100, {32, 1.0F, 0.9F, false}},
+                        Case{"top_k 32 in 3040 ties", 2.0F, 3000, {32, 1.0F, 1.0F, false}},
+                        Case{"top_k 32 in 3040 ties, nucleus inside", 2.0F, 3000, {32, 1.0F, 0.85F, false}}}) {
+    Random random(0x74696533 + c.spread + c.policy.topK);
+    std::vector<uint32_t> tied;
+    for (uint32_t index = 0; index < c.spread; ++index)
+      tied.push_back(1000 + uint32_t(uint64_t{index} * (vocabulary - 2000) / c.spread));
+    for (uint32_t index = 0; index < 40; ++index)
+      tied.push_back(3 * 256 + 5 + index * SPLASH_TARGET_SAMPLING_SHARDS * 256);
+    std::sort(tied.begin(), tied.end());
+    tied.erase(std::unique(tied.begin(), tied.end()), tied.end());
+    for (uint32_t row = 0; row < kRows; ++row) {
+      float *logits = batch.row(row);
+      for (uint32_t token = 0; token < vocabulary; ++token)
+        logits[token] = -12.0F + random.unit();
+      for (uint32_t index = 0; index < tied.size(); ++index)
+        logits[tied[index]] = c.tie == 0.0F && index % 2 ? -0.0F : c.tie;
+      for (uint32_t index = 0; index < kLeaders; ++index)
+        logits[5 + index * 13] = c.tie + 0.5F + 0.05F * float(index);
+    }
+    const uint32_t last = tied[c.policy.topK - kLeaders - 1];
+    const Distribution target = referenceDistribution(batch.row(0), vocabulary, c.policy);
+    for (uint32_t position = 0; position < kPositions; ++position) {
+      const uint32_t draft = position % 2 ? tied[c.policy.topK - kLeaders] : last;
+      setDraft(batch, 0, position, {draft}, draft, random);
+    }
+    for (uint32_t uniform = 0; uniform < kUniforms; ++uniform)
+      batch.uniforms()[uniform] = 0.5F * (random.unit() + 1.0F);
+    const auto verify = [&](bool top) {
+      batch.poison();
+      CommandGraph graph;
+      searchTopTokens(top);
+      sampling.addVerify(graph, {&c.policy, 1}, batch.buffers, kStopTokens[0], kStopTokens[1], {});
+      searchTopTokens(true);
+      require(searchesTopTokens(graph) == top, std::string(c.name) + ": the switch did not choose the search");
+      static_cast<void>(backend.submitCommandAsync(graph.dispatches()).wait());
+      return bytesOf({batch.buffers.vocabularyRows, batch.buffers.outputTokens, batch.buffers.candidateRows});
+    };
+    require(verify(false) == verify(true),
+            std::string(c.name) + ": the selection differs from the whole-vocabulary search");
+    for (uint32_t row = 0; row < kRows; ++row) {
+      const std::string label = std::string(c.name) + " row " + std::to_string(row);
+      if (!(c.policy.topP < 1.0F))
+        require(batch.record(row).end_key == logitKey(c.tie) && batch.record(row).end_last == last,
+                label + ": top_k ended at token " + std::to_string(batch.record(row).end_last) + ", not " +
+                    std::to_string(last));
+      requireSampledRow(batch, row, target, label);
+    }
+  }
+}
+
+// SPLASH_SAMPLER_TOPK32: wide prompt lookup's 16 and 32 rows, top-k 32 and
+// 20, select and accept as the whole-vocabulary search does, byte for byte.
+void lookupTopTokens(MetalBackend &backend, uint32_t rows) {
+  constexpr uint32_t vocabulary = 248320;
+  const Sampling sampling(vocabulary);
+  const LookupBatch lookup = makeLookupBatch(backend, vocabulary, rows);
+  const Batch &batch = lookup.batch;
+  Random random(0x6c6f7033 + rows);
+  for (const SamplingPolicy &policy : {SamplingPolicy{32, 0.9F, 0.9F}, SamplingPolicy{20, 1.0F, 0.95F}}) {
+    for (uint32_t row = 0; row < rows; ++row) {
+      fillShaped(batch.row(row), vocabulary, static_cast<Shape>(row % 3), random);
+      if (row + 1 < rows)
+        batch.inputTokens()[row + 1] = referenceArgmax(batch.row(row), vocabulary);
+    }
+    batch.inputTokens()[0] = 5;
+    lookup.pointMass();
+    for (uint32_t uniform = 0; uniform < kUniforms + rows; ++uniform)
+      batch.uniforms()[uniform] = 0.5F * (random.unit() + 1.0F);
+    const auto run = [&](bool top) {
+      batch.poison();
+      searchTopTokens(top);
+      lookup.run(backend, sampling, policy, rows);
+      searchTopTokens(true);
+      return bytesOf({batch.buffers.vocabularyRows, batch.buffers.outputTokens, lookup.acceptance.retainedCount,
+                      lookup.acceptance.acceptedCount, lookup.acceptance.tileRetained});
+    };
+    require(run(false) == run(true),
+            "lookup " + std::to_string(rows) + " rows top_k " + std::to_string(policy.topK) +
+                ": differs from the whole-vocabulary search");
+  }
+}
+
 int main(int argc, char **argv) {
   std::string stage = "setup";
   try {
@@ -2725,7 +2988,15 @@ int main(int argc, char **argv) {
       }
       stage = "lookup distribution, " + std::to_string(rows) + " rows";
       lookupDistribution(backend, rows, 8000);
+      stage = "top-token lookup, " + std::to_string(rows) + " rows";
+      lookupTopTokens(backend, rows);
     }
+    for (const auto &[vocabulary, trials] : {std::pair{1003U, 64U}, std::pair{248320U, 12U}}) {
+      stage = "top tokens match the whole vocabulary, vocabulary " + std::to_string(vocabulary);
+      topTokensMatchWholeVocabulary(backend, vocabulary, trials);
+    }
+    stage = "top-token ties";
+    topTokenTies(backend);
 
     // SPLASH_BLOCK_VERIFY on, its default. Batches with a greedy lane keep
     // the token rule; every batch draws the same, bit for bit, as its lanes
@@ -2752,6 +3023,10 @@ int main(int argc, char **argv) {
         stage = "block on: mixed verify B" + std::to_string(lanes) + ", sampling mask " + std::to_string(mask);
         mixedVerify(backend, lanes, mask);
       }
+    }
+    for (const auto &[vocabulary, trials] : {std::pair{1003U, 64U}, std::pair{248320U, 12U}}) {
+      stage = "block on: top tokens match the whole vocabulary, vocabulary " + std::to_string(vocabulary);
+      topTokensMatchWholeVocabulary(backend, vocabulary, trials);
     }
     std::cout << "target_sampling_metal_test: PASS\n";
     return 0;

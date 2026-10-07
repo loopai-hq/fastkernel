@@ -984,6 +984,274 @@ kernel void decode_sample_vocabulary_draw_block(
   }
 }
 
+// SPLASH_SAMPLER_TOPK32 (fork, default on): a sampled row whose lane keeps at
+// most kTopTokens tokens by top-k and none by min-p ends among its first
+// kTopTokens tokens in the order of the logits. In one pass over its shard,
+// each group sums its share of the softmax denominator with shard_mass's
+// arithmetic, token for token, and keeps its first kTopTokens tokens; the
+// search merges the shards' lists and ends the row from them with
+// distribution_end's own arithmetic, so its record, and every draw,
+// acceptance and export that reads it, is decode_sample_vocabulary_search's.
+// Where that is not certain (a kept logit that is not finite, or a top_p cut
+// within 2^-16 of a cumulative mass that distribution_end may sum in another
+// order), the row runs distribution_end itself. The lists sit in the row's
+// draw ranges, which only its draw writes, later.
+constant constexpr uint kTopTokens = SPLASH_SAMPLER_TOP_TOKENS;
+static_assert(kTopTokens == 32, "a simdgroup holds one top token per lane");
+static_assert(SPLASH_TARGET_SAMPLING_SHARDS * kTopTokens + kTopTokens <= kVocabularyThreads,
+              "a search group holds every shard's list and the merged one");
+constant constexpr uint kShardTopsPerRow =
+    kVocabularyRanges * sizeof(TargetVocabularyRange) / sizeof(uint);
+// The key of +infinity: only the NaNs' are above it.
+constant constexpr uint kInfinityKey = 0xff800000u;
+
+// A token before another in the order of the logits.
+inline bool order_before(uint key, uint id, uint other_key, uint other_id) {
+  return key > other_key || (key == other_key && id < other_id);
+}
+
+// fastkernel 1.0.0's lane-distributed sorted top-32, in the order of the
+// logits: lane r holds rank r, an empty rank {kNoKey, ~0u}. Each lane offers
+// one token, or none when !valid; the offers that pass rank 31 are inserted
+// one at a time, so the list stays in registers. Every lane of the simdgroup
+// must call it (an invalid one with valid = false): the shuffles read lanes.
+inline void simd_top32_offer(thread uint &key, thread uint &id,
+                             uint offered_key, uint offered_id, bool valid,
+                             uint lane) {
+  bool pending = valid;
+  while (true) {
+    // Every lane takes part in the shuffles, so rank 31's lane is always an
+    // active source; behind `pending &&` a lane with nothing pending would
+    // skip them.
+    const uint last_key = simd_shuffle(key, ushort(31));
+    const uint last_id = simd_shuffle(id, ushort(31));
+    pending = pending && order_before(offered_key, offered_id, last_key, last_id);
+    const uint first = simd_min(pending ? lane : 32u);
+    if (first == 32u)
+      return;
+    const uint inserted_key = simd_shuffle(offered_key, ushort(first));
+    const uint inserted_id = simd_shuffle(offered_id, ushort(first));
+    const uint position = simd_sum(
+        order_before(key, id, inserted_key, inserted_id) ? 1u : 0u);
+    const uint up_key = simd_shuffle_up(key, ushort(1));
+    const uint up_id = simd_shuffle_up(id, ushort(1));
+    if (lane == position) {
+      key = inserted_key;
+      id = inserted_id;
+    } else if (lane > position) {
+      key = up_key;
+      id = up_id;
+    }
+    if (lane == first)
+      pending = false;
+  }
+}
+
+// shard_mass's arithmetic for the one-pass kernel below, in two steps; a
+// copy, so that upstream's kernels compile exactly as they did. One admitted
+// token's step of a thread's online softmax:
+inline void accumulate_mass(thread TargetShardMass &mass, float value,
+                            float temperature) {
+  if (value > mass.maximum) {
+    mass.sum = mass.sum * exp((mass.maximum - value) / temperature) + 1.0f;
+    mass.maximum = value;
+  } else {
+    mass.sum += exp((value - mass.maximum) / temperature);
+  }
+  ++mass.admitted;
+}
+
+// The shard's share from its threads' running masses.
+inline void store_shard_mass(TargetShardMass mass, TargetRow row,
+                             device TargetShardMass &partial,
+                             threadgroup TargetShardMass *group_masses,
+                             uint thread_index, uint lane, uint simd_group) {
+  const float simd_maximum = simd_max(mass.maximum);
+  const float scaled =
+      mass.sum > 0.0f
+          ? mass.sum * exp((mass.maximum - simd_maximum) / row.temperature)
+          : 0.0f;
+  const float simd_total = simd_sum(scaled);
+  const uint simd_admitted = simd_sum(mass.admitted);
+  if (lane == 0)
+    group_masses[simd_group] = {simd_maximum, simd_total, simd_admitted};
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (thread_index == 0)
+    partial = merge_masses(group_masses, 8, row.temperature);
+}
+
+// One shard of each selected row of the sampled lanes: its share of the
+// row's softmax denominator, the bytes decode_sample_mass_sharded writes, and
+// the ids of its first kTopTokens admitted tokens in the order of the logits
+// (~0u past the last), in the row's draw ranges.
+kernel void decode_sample_mass_top32_sharded(
+    device const float *logits [[buffer(0)]],
+    device const uint *token_mask [[buffer(1)]],
+    device TargetShardMass *partial_masses [[buffer(2)]],
+    device uint *shard_tops [[buffer(3)]],
+    constant TargetSamplingParams &params [[buffer(4)]],
+    uint group [[threadgroup_position_in_grid]],
+    uint thread_index [[thread_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint simd_group [[simdgroup_index_in_threadgroup]]) {
+  constexpr uint Shards = SPLASH_TARGET_SAMPLING_SHARDS;
+  threadgroup TargetShardMass group_masses[8];
+  threadgroup uint group_keys[8 * kTopTokens];
+  threadgroup uint group_ids[8 * kTopTokens];
+  const uint s = group / Shards;
+  if (!lane_samples(params, s))
+    return;
+  const uint shard = group % Shards;
+  const TargetRow row = selected_row(logits, token_mask, params, s);
+  // One pass: shard_mass's running masses, token for token, and each
+  // simdgroup's first tokens; then simdgroup 0 merges the eight lists.
+  TargetShardMass mass{-FLT_MAX, 0.0f, 0};
+  uint key = kNoKey;
+  uint id = 0xffffffffu;
+  for (uint base = shard * 256; base < row.vocabulary; base += Shards * 256) {
+    const uint token = base + thread_index;
+    const bool admitted = token < row.vocabulary && row.admits(token);
+    const float value = admitted ? row.logits[token] : 0.0f;
+    if (admitted)
+      accumulate_mass(mass, value, row.temperature);
+    simd_top32_offer(key, id, admitted ? logit_key(value) : kNoKey, token,
+                     admitted, lane);
+  }
+  store_shard_mass(mass, row, partial_masses[group], group_masses,
+                   thread_index, lane, simd_group);
+  group_keys[simd_group * kTopTokens + lane] = key;
+  group_ids[simd_group * kTopTokens + lane] = id;
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (simd_group != 0)
+    return;
+  key = kNoKey;
+  id = 0xffffffffu;
+  for (uint list = 0; list < 8; ++list) {
+    const uint offered = group_ids[list * kTopTokens + lane];
+    simd_top32_offer(key, id, group_keys[list * kTopTokens + lane], offered,
+                     offered != 0xffffffffu, lane);
+  }
+  shard_tops[ulong(s) * kShardTopsPerRow + shard * kTopTokens + lane] = id;
+}
+
+// distribution_end's end, found from the row's first tokens in the order of
+// the logits (ranked keys and ids; every admitted token when there are fewer
+// than kTopTokens), for a lane that keeps at most kTopTokens tokens by top-k
+// and none by min-p; found is false where distribution_end may end
+// elsewhere. Top-k alone ends on the top_k-th token, or keeps every admitted
+// token. A nucleus walks the kept tokens' weights in order and ends on the
+// first whose cumulative mass exceeds top_p times their mass, which
+// distribution_end sums from the first token as here, or over the shards
+// (merged.sum) when top_k keeps every token; it sums the top-k mass in
+// another order when its search brackets more than a group ranks, which
+// moves the target by under 2^-16 of it, so a cumulative mass that close to
+// the target leaves the end unknown. So do non-finite kept logits, which the
+// key order and distribution_end's sums place differently.
+struct TopEnd {
+  OrderBoundary end;
+  bool found;
+};
+
+inline TopEnd top_tokens_end(TargetRow row, TargetShardMass merged,
+                             uint top_k, float top_p,
+                             threadgroup const uint *keys,
+                             threadgroup const uint *ids) {
+  const TopEnd unknown{{kNoKey, 0}, false};
+  const bool cut = top_k < merged.admitted;
+  const uint kept = cut ? top_k : merged.admitted;
+  if (kept == 0 || keys[0] >= kInfinityKey || keys[kept - 1] <= kLowestKey)
+    return unknown;
+  if (!(top_p < 1.0f))
+    return {cut ? OrderBoundary{keys[kept - 1], ids[kept - 1]}
+                : OrderBoundary{kNoKey, 0},
+            true};
+  float mass = merged.sum;
+  if (cut) {
+    mass = 0.0f;
+    for (uint index = 0; index < kept; ++index)
+      mass += row.weight(key_logit(keys[index]));
+  }
+  const float target = top_p * mass;
+  const float margin = target * (1.0f / 65536.0f);
+  float walked = 0.0f;
+  for (uint index = 0; index < kept; ++index) {
+    walked += row.weight(key_logit(keys[index]));
+    if (!(fabs(walked - target) > margin))
+      return unknown;
+    if (walked > target)
+      return {{keys[index], ids[index]}, true};
+  }
+  // Rounding left the nucleus unreached, within the margin of its target.
+  return unknown;
+}
+
+// decode_sample_vocabulary_search for selections whose sampled lanes keep at
+// most kTopTokens tokens by top-k and none by min-p: simdgroup 0 merges the
+// shards' lists into the row's first kTopTokens tokens, which end the row
+// unless top_tokens_end leaves it to distribution_end.
+kernel void decode_sample_vocabulary_search_top32(
+    device const float *logits [[buffer(0)]],
+    device const uint *token_mask [[buffer(1)]],
+    device const TargetShardMass *partial_masses [[buffer(2)]],
+    device const uint *shard_tops [[buffer(3)]],
+    device TargetVocabularyRow *vocabulary_rows [[buffer(4)]],
+    constant TargetSamplingParams &params [[buffer(5)]],
+    uint s [[threadgroup_position_in_grid]],
+    uint thread_index [[thread_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint simd_group [[simdgroup_index_in_threadgroup]]) {
+  constexpr uint Shards = SPLASH_TARGET_SAMPLING_SHARDS;
+  threadgroup VocabularyScratch scratch;
+  threadgroup TopEnd top_end;
+  if (!lane_samples(params, s))
+    return;
+  const uint batch = selected_lane(params, s);
+  TargetRow row = selected_row(logits, token_mask, params, s);
+  const TargetShardMass merged =
+      merge_masses(partial_masses + ulong(s) * Shards, Shards, row.temperature);
+  row.maximum = merged.maximum;
+  const uint top_k = params.top_k[batch];
+  const float top_p = params.top_p[batch];
+  const float min_p = params.min_p[batch];
+  // Simdgroup g loads shard g's list and its keys, all at once; simdgroup 0
+  // then merges the lists into the row's first tokens, after them.
+  constexpr uint Listed = Shards * kTopTokens;
+  if (simd_group < Shards) {
+    const uint index = simd_group * kTopTokens + lane;
+    const uint offered = shard_tops[ulong(s) * kShardTopsPerRow + index];
+    scratch.ids[index] = offered;
+    scratch.keys[index] =
+        offered != 0xffffffffu ? logit_key(row.logits[offered]) : kNoKey;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (simd_group == 0) {
+    uint key = kNoKey;
+    uint id = 0xffffffffu;
+    for (uint shard = 0; shard < Shards; ++shard) {
+      const uint offered = scratch.ids[shard * kTopTokens + lane];
+      simd_top32_offer(key, id, scratch.keys[shard * kTopTokens + lane],
+                       offered, offered != 0xffffffffu, lane);
+    }
+    scratch.keys[Listed + lane] = key;
+    scratch.ids[Listed + lane] = id;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (thread_index == 0)
+    top_end = top_k <= kTopTokens && !(min_p > 0.0f)
+                  ? top_tokens_end(row, merged, top_k, top_p,
+                                   scratch.keys + Listed, scratch.ids + Listed)
+                  : TopEnd{{kNoKey, 0}, false};
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  const TopEnd found = top_end;
+  const OrderBoundary end =
+      found.found ? found.end
+                  : distribution_end(row, min_p, top_k, top_p, merged.sum,
+                                     merged.admitted, scratch, thread_index,
+                                     lane, simd_group);
+  if (thread_index == 0)
+    vocabulary_rows[s] = {merged.maximum, end.key, end.last, 0.0f};
+}
+
 // The sampling penalties of one logit: repetition divides a positive
 // logit and multiplies a negative one when the prompt or the output holds
 // the token, and presence and frequency lower it by the output's count of

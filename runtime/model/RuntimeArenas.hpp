@@ -454,6 +454,17 @@ public:
     return layerBatchSlice(base, layers, gdnLayer, lanes);
   }
 
+  // One lane slot of a GDN layer (SPLASH_GDN_DEFER: a one-lane verify's
+  // rows at slot 0 or 1, the slot the commit indexes as that lane).
+  [[nodiscard]] metal::MetalBuffer gdnLaneSlice(DecodeTensor base, uint32_t gdnLayer, uint32_t lane) const {
+    const uint32_t layers = geometry_.target.stateLayout.layers;
+    if (lane >= kLaneCount || gdnLayer >= layers || !isGdnLayerTensor(base))
+      throw std::out_of_range("invalid GDN lane slot");
+    const uint32_t index = static_cast<uint32_t>(base);
+    const uint64_t stride = sizes_[index] / layers;
+    return backend_.view(base_, offsets_[index] + (uint64_t{gdnLayer} * kLaneCount + lane) * stride, stride);
+  }
+
   [[nodiscard]] metal::MetalBuffer gdnStorage(DecodeTensor base) const {
     if (!isGdnLayerTensor(base))
       throw std::invalid_argument("tensor is not GDN replay scratch");

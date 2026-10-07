@@ -81,11 +81,11 @@ For Qwen3.6-35B-A3B, use `incoai/Qwen3.6-35B-A3B-Splash` instead of `incoai/Qwen
 
 ### Prebuilt download (no Xcode)
 
-Download `fastkernel-1.1.1-macos-arm64.tar.gz` from
+Download `fastkernel-1.1.3-macos-arm64.tar.gz` from
 [Releases](https://github.com/loopai-hq/fastkernel/releases). Then unpack it and start the server:
 
 ```bash
-tar -xzf fastkernel-1.1.1-macos-arm64.tar.gz && cd fastkernel
+tar -xzf fastkernel-1.1.3-macos-arm64.tar.gz && cd fastkernel
 SPLASH_DRAFT_HEAD_IDS=$PWD/data/head-ranked.u32 ./splash serve --model incoai/Qwen3.8-27B-Splash
 ```
 
@@ -136,8 +136,8 @@ cp -R .claude/skills/fastkernel ~/.agents/skills/    # Codex
 - **Faster GPU code.** New GPU code, hand-tuned for Apple silicon, does the model's math in less time.
 - **Text-only mode.** `SPLASH_TEXT_ONLY=1` skips the image weights, which leaves more memory for the context on smaller
   Macs.
-- **New engine code.** 5,356 new lines of C++ and Metal, Apple's GPU language, on top of Splash 1.3.0.
-  They include 34 new GPU kernels, small programs that run on the GPU. What each part does and
+- **New engine code.** 6,187 new lines of C++ and Metal, Apple's GPU language, on top of Splash 1.3.0.
+  They include 38 new GPU kernels, small programs that run on the GPU. What each part does and
   what it gained: [docs/WHATS-INSIDE.md](docs/WHATS-INSIDE.md). Every change has a switch:
   [docs/SWITCHES.md](docs/SWITCHES.md).
 

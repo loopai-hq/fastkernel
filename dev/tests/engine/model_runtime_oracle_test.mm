@@ -2045,6 +2045,7 @@ int main(int argc, char **argv) {
                           replayed[0].outputTokensWithoutKv == stored &&
                   states.metadata(1).lengths.targetTokens == 129 + stored,
               "replay did not commit exactly the supplied prefix");
+      executor.settleState();  // SPLASH_GDN_DEFER: lands lane 1's pending commit
       requireCommittedStateIdentical(
           states, 0, 1, "fixed DFlash-8 retained=" + std::to_string(stored));
       executor.end(replayId);
@@ -3011,6 +3012,7 @@ int main(int argc, char **argv) {
       };
       const auto rebuild = [&](bool repeatDuringReplay,
                                 bool deliverInitialMask = false) {
+        executor.settleState();  // SPLASH_GDN_DEFER: the decoded state, committed
         const StateSamples before =
             repeatDuringReplay ? sampleCommittedState(backend, states, stateLane)
                                : StateSamples{};

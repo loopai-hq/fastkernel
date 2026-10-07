@@ -246,6 +246,17 @@ struct QwenTargetVerifyBuffers final {
   metal::MetalBuffer normalizedPadded;
   metal::MetalBuffer fullPackedPadded;
   std::span<const metal::MetalBuffer> gdnPackedPadded;
+  // SPLASH_GDN_DEFER (fastkernel): a one-lane verify whose GDN layers defer
+  // the lane's recurrent commit (ops::GdnDeferScan): gdnPendingRows rows of
+  // the previous cycle at gdnPending* (each layer's lane slot of them), read
+  // from gdnDeferBase (the lane's next cell while rows are pending, else its
+  // current cell).
+  bool gdnDefer = false;
+  uint32_t gdnPendingRows = 0;
+  metal::MetalBuffer gdnDeferBase{};
+  std::span<const metal::MetalBuffer> gdnPendingMixed{};
+  std::span<const metal::MetalBuffer> gdnPendingDecay{};
+  std::span<const metal::MetalBuffer> gdnPendingBeta{};
 };
 
 struct QwenTargetCommitBuffers final {
@@ -315,6 +326,14 @@ public:
                     metal::MetalBuffer hidden, uint32_t rows) const;
   void addStateCommit(metal::CommandGraph &graph,
                       QwenTargetCommitBuffers buffers, uint32_t lanes) const;
+  // SPLASH_GDN_DEFER (fastkernel): whether a one-lane verify can defer its
+  // GDN commit (its GDN layers take the value-parts route); a deferred
+  // cycle's commit (the convolution carry only); and a pending recurrent
+  // commit that no deferred scan takes (ops::GDN::addFlush).
+  [[nodiscard]] bool gdnDeferSupported() const;
+  void addStateCommitConv(metal::CommandGraph &graph, QwenTargetCommitBuffers buffers) const;
+  void addStateFlush(metal::CommandGraph &graph, ops::GdnFlushBuffers buffers, uint32_t rows,
+                     uint32_t slot) const;
   // A wide lookup's GDN commit: retainedCounts[0] holds its total.
   void addStateCommit16(metal::CommandGraph &graph, QwenTargetCommitBuffers buffers,
                         metal::MetalBuffer convolutionScratch, uint32_t tiles) const;

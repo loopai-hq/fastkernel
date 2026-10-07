@@ -1,10 +1,10 @@
 # What we built
 
 fastkernel is new engine code, not a settings change. Compared with Splash 1.3.0, the engine's
-`runtime/` folder has **52 files changed, 5,356 lines added and 329 removed**.
+`runtime/` folder has **54 files changed, 6,187 lines added and 379 removed**.
 
-- 2,216 of the new lines are Metal shaders and GPU headers. Metal is Apple's language for GPU code.
-- There are **34 new GPU kernels**: 133 `kernel void` functions, up from
+- 2,700 of the new lines are Metal shaders and GPU headers. Metal is Apple's language for GPU code.
+- There are **38 new GPU kernels**: 137 `kernel void` functions, up from
   Splash 1.3.0's 99. A kernel is a small program that runs on the GPU.
 - The model weights, the draft model and the rule that the full model checks every token stay the same.
 
@@ -12,12 +12,12 @@ The biggest pieces, in lines added:
 
 | File | Lines added |
 |---|---:|
-| `runtime/model/Runtime.cpp` | 1,057 |
+| `runtime/model/Runtime.cpp` | 1,170 |
+| `runtime/metal/kernels/decode/sampling.metal` | 651 |
 | `runtime/metal/kernels/common/gdn_wide.h` | 627 |
 | `runtime/metal/kernels/decode/linear_q4_split.metal` | 620 |
-| `runtime/metal/kernels/decode/sampling.metal` | 383 |
+| `runtime/metal/kernels/common/gdn_value_parts.h` | 388 |
 | `runtime/metal/MetalBackend.mm` | 353 |
-| `runtime/metal/kernels/common/gdn_value_parts.h` | 284 |
 
 ## How the engine writes an answer
 

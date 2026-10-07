@@ -139,6 +139,10 @@ struct AcceptanceBuffers final {
 // whose lanes all sample is accepted by block verification (Sun et al. 2024)
 // instead of the token rule. Both keep the target's distribution; the block
 // rule accepts more draft tokens per cycle (+1.29% in fastkernel 1.0.0).
+// SPLASH_SAMPLER_TOPK32 (default on, read per selection): a selection whose
+// sampled lanes keep at most SPLASH_SAMPLER_TOP_TOKENS tokens by top-k and
+// none by min-p searches each row from its shards' top tokens, which writes
+// the records the whole-vocabulary search writes (sampling.metal).
 class Sampling final {
 public:
   explicit Sampling(uint32_t vocabulary);

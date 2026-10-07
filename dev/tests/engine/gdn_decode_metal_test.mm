@@ -29,6 +29,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
@@ -494,6 +495,11 @@ void requireUntouched(const Fixture &fixture, uint32_t lane,
     require(bytes[index] == 0, where + ": idle lane cell was written");
 }
 
+// The stored route (SPLASH_GDN_SCAN_NOSTORE=0, set by main), checked against
+// the reference; then, for VH48, the no-store route (noStoreDecode below).
+void noStoreDecode(MetalBackend &backend, Fixture &fixture, uint32_t lanes, const std::string &where,
+                   const std::vector<uint8_t> &hidden, const std::vector<std::vector<uint8_t>> &decoded);
+
 void runDecode(MetalBackend &backend, const GdnShape &shape, uint32_t lanes,
                bool float32) {
   Fixture fixture(backend, shape, lanes, float32);
@@ -514,10 +520,6 @@ void runDecode(MetalBackend &backend, const GdnShape &shape, uint32_t lanes,
     for (uint32_t layer = 0; layer < kLayers; ++layer)
       checkDecode(fixture, layer, lane);
   }
-  // The commit reads no norm weights; the bf16 pass covers it.
-  if (float32)
-    return;
-
   // The commit replays the retained rows from the incoming cell over the
   // decoded q/k/v and gates; eight retained rows leave the decoded cell.
   std::vector<std::vector<uint8_t>> decoded;
@@ -525,6 +527,17 @@ void runDecode(MetalBackend &backend, const GdnShape &shape, uint32_t lanes,
     decoded.emplace_back(fixture.cellBytes(fixture.next[lane]),
                          fixture.cellBytes(fixture.next[lane]) +
                              fixture.cell.bytes);
+  if (shape.valueHeads == 48) {
+    const auto *hiddenBytes = static_cast<const uint8_t *>(fixture.hidden.contents());
+    noStoreDecode(backend, fixture, lanes, where,
+                  {hiddenBytes, hiddenBytes + fixture.hidden.sizeBytes()}, decoded);
+    setenv("SPLASH_GDN_SCAN_NOSTORE", "0", 1);
+    for (uint32_t lane = 0; lane < lanes; ++lane)
+      std::memcpy(fixture.next[lane].contents(), decoded[lane].data(), fixture.cell.bytes);
+  }
+  // The commit reads no norm weights; the bf16 pass covers it.
+  if (float32)
+    return;
   CommandGraph commit;
   GDN::addCommit(commit, fixture.commitBuffers(), shape, kLayers, lanes,
                  fixture.cell.strides());
@@ -566,6 +579,37 @@ void runDecode(MetalBackend &backend, const GdnShape &shape, uint32_t lanes,
       }
     }
   }
+}
+
+// SPLASH_GDN_SCAN_NOSTORE=1 on the stored route's inputs: the scans leave every
+// cell as cleared and write the stored route's hidden rows; the commit, eight
+// rows retained, replays them into the stored route's cells bit for bit.
+void noStoreDecode(MetalBackend &backend, Fixture &fixture, uint32_t lanes, const std::string &where,
+                   const std::vector<uint8_t> &hidden, const std::vector<std::vector<uint8_t>> &decoded) {
+  setenv("SPLASH_GDN_SCAN_NOSTORE", "1", 1);
+  const std::string what = where + " no store";
+  fixture.clear();
+  CommandGraph graph;
+  for (uint32_t layer = 0; layer < kLayers; ++layer)
+    static_cast<void>(GDN::addDecode(graph, fixture.decodeBuffers(layer), fixture.shape, lanes, layer,
+                                     fixture.cell.strides(), GdnHeadOrder::Grouped, LinearInput::Plain));
+  require(graph.dispatches().front().pipelineName.ends_with("_nostore"), what + ": stored route selected");
+  static_cast<void>(backend.submitCommandAsync(graph.dispatches()).wait());
+  for (uint32_t lane = 0; lane < kMaxLanes; ++lane)
+    requireUntouched(fixture, lane, what);
+  require(!std::memcmp(fixture.hidden.contents(), hidden.data(), hidden.size()), what + ": hidden rows differ");
+  if (fixture.mixerNorm.float32)
+    return;  // the commit reads no norm weights
+  CommandGraph commit;
+  GDN::addCommit(commit, fixture.commitBuffers(), fixture.shape, kLayers, lanes, fixture.cell.strides());
+  require(commit.dispatches().front().pipelineName == "verify_gdn_commit_replay", what + ": commit does not replay");
+  auto *retained = static_cast<uint32_t *>(fixture.retained.contents());
+  for (uint32_t lane = 0; lane < kMaxLanes; ++lane)
+    retained[lane] = kRows;
+  static_cast<void>(backend.submitCommandAsync(commit.dispatches()).wait());
+  for (uint32_t lane = 0; lane < lanes; ++lane)
+    require(!std::memcmp(fixture.next[lane].contents(), decoded[lane].data(), fixture.cell.bytes),
+            what + " lane " + std::to_string(lane) + ": replayed cell differs from the stored one");
 }
 
 // The out-projection table a fused decode writes into its scratch and the one
@@ -977,6 +1021,7 @@ void groupSums(MetalBackend &backend) {
               GDN::outputInput(paired, shape, GdnHeadOrder::Grouped, fixture.mixerNorm) == paired.input(),
           "GDN group sums offered where the variant or the plan does not take them");
   for (const uint32_t layer : {0U, kLayers - 1}) {
+    setenv("SPLASH_GDN_SCAN_NOSTORE", "0", 1);  // the reference stores
     fixture.clear();
     CommandGraph reference;
     (void)GDN::addDecode(reference, fixture.decodeBuffers(layer), shape, 1, layer, fixture.cell.strides(),
@@ -985,7 +1030,12 @@ void groupSums(MetalBackend &backend) {
                   {128, 1, 1});
     (void)backend.submitCommandAsync(reference.dispatches()).wait();
     const DecodedBytes expected = decodedBytes(fixture, layer);
+    // SPLASH_GDN_SCAN_NOSTORE (read per call): the value-parts route also runs
+    // without its stores; every other byte is the stored route's and the state
+    // cell stays as cleared (the commit replays it, ops/GDN.cpp).
+    for (const bool nostore : parts4 ? std::vector<bool>{false, true} : std::vector<bool>{false})
     for (uint32_t repeat = 0; repeat < 2; ++repeat) {
+      setenv("SPLASH_GDN_SCAN_NOSTORE", nostore ? "1" : "0", 1);
       fixture.clear();
       GdnDecodeBuffers buffers = fixture.decodeBuffers(layer);
       buffers.linearScratch.sums = sums;
@@ -996,7 +1046,9 @@ void groupSums(MetalBackend &backend) {
               route + " did not report the sums it wrote");
       const auto dispatches = fused.dispatches();
       if (parts4)
-        require(dispatches.size() == 2 && dispatches[0].pipelineName == "verify_gdn_value_parts4_scan" &&
+        require(dispatches.size() == 2 &&
+                    dispatches[0].pipelineName ==
+                        (nostore ? "verify_gdn_value_parts4_scan_nostore" : "verify_gdn_value_parts4_scan") &&
                     dispatches[0].threadgroups.x == 192 && dispatches[0].threadsPerThreadgroup.x == 256 &&
                     dispatches[1].pipelineName == "verify_gdn_value_parts4_finalize" &&
                     dispatches[1].threadgroups.x == 48 && dispatches[1].threadsPerThreadgroup.x == 256,
@@ -1006,7 +1058,16 @@ void groupSums(MetalBackend &backend) {
                     dispatches[0].threadgroups.x == 48 && dispatches[0].threadsPerThreadgroup.x == 256,
                 route + " route not selected");
       (void)backend.submitCommandAsync(dispatches).wait();
-      requireSame(decodedBytes(fixture, layer), expected, route + " layer " + std::to_string(layer));
+      const std::string what = route + (nostore ? " (no store)" : "") + " layer " + std::to_string(layer);
+      if (nostore) {
+        DecodedBytes got = decodedBytes(fixture, layer);
+        require(std::all_of(got.state.begin(), got.state.end(), [](uint8_t b) { return b == 0; }),
+                what + ": the state cell was written");
+        got.state = expected.state;
+        requireSame(got, expected, what);
+      } else {
+        requireSame(decodedBytes(fixture, layer), expected, what);
+      }
       require(!std::memcmp(sums.contents(), referenceSums.contents(), bytes),
               route + ": sums differ from decode_linear_q4_split_sums");
       const auto *guard = static_cast<const uint8_t *>(guarded.contents());
@@ -1014,7 +1075,9 @@ void groupSums(MetalBackend &backend) {
         require(guard[n] == 0xcd && guard[64 + bytes + n] == 0xcd, route + ": sum guard overwritten");
     }
   }
-  std::cout << route << ": layers 0/last route/bytes/guard/repeat PASS\n";
+  setenv("SPLASH_GDN_SCAN_NOSTORE", "0", 1);
+  std::cout << route << ": layers 0/last route/bytes/guard/repeat PASS"
+            << (parts4 ? " (stored and SPLASH_GDN_SCAN_NOSTORE)" : "") << "\n";
 }
 
 // The wide decode of one layer against `tiles` chained M8 decodes, each
@@ -1380,6 +1443,9 @@ int main(int argc, char **argv) {
     if (argc != 2)
       throw std::invalid_argument("usage: gdn-decode METALLIB");
     MetalBackend backend(argv[1]);
+    // Every check reads the stored GDN scan routes; noStoreDecode and groupSums
+    // switch SPLASH_GDN_SCAN_NOSTORE on for their no-store passes and back.
+    setenv("SPLASH_GDN_SCAN_NOSTORE", "0", 1);
     rejectsInvalid(backend);
     // A commit's layers are a full batch of rows apart, so one lane's commit
     // reaches past the rows of the lanes it runs.

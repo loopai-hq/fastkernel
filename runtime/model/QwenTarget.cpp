@@ -370,7 +370,10 @@ void QwenTarget::addVerify(
       buffers.gdnDecay.size() != geometry_.stateLayout.layers ||
       buffers.gdnBeta.size() != geometry_.stateLayout.layers ||
       buffers.chunkKeys.size() != geometry_.kvLayout.attentionLayers ||
-      buffers.chunkValues.size() != geometry_.kvLayout.attentionLayers) {
+      buffers.chunkValues.size() != geometry_.kvLayout.attentionLayers ||
+      (buffers.gdnDefer && (lanes != 1 || buffers.gdnPendingMixed.size() != geometry_.stateLayout.layers ||
+                            buffers.gdnPendingDecay.size() != geometry_.stateLayout.layers ||
+                            buffers.gdnPendingBeta.size() != geometry_.stateLayout.layers))) {
     throw std::invalid_argument("invalid Qwen verify batch");
   }
   const uint32_t rows = lanes * ExecutionLimits::targetVerifyRows;
@@ -400,7 +403,7 @@ void QwenTarget::addVerify16(
       buffers.gdnDecay.size() != geometry_.stateLayout.layers ||
       buffers.gdnBeta.size() != geometry_.stateLayout.layers ||
       buffers.chunkKeys.size() != geometry_.kvLayout.attentionLayers ||
-      buffers.chunkValues.size() != geometry_.kvLayout.attentionLayers ||
+      buffers.chunkValues.size() != geometry_.kvLayout.attentionLayers || buffers.gdnDefer ||
       convolutionScratch.sizeBytes() < std::max(ops::gdnDecode16ConvolutionScratchBytes(state, tiles),
                                                 ops::gdnCommit16ConvolutionScratchBytes(state, tiles)))
     throw std::invalid_argument("invalid wide Qwen verify batch");
@@ -477,10 +480,13 @@ metal::MetalBuffer QwenTarget::addVerifyMixer(VerifyStep &step, const QwenGdnWei
   const ops::GdnStateStrides state{geometry_.stateLayout.convolutionLayerBytes(),
                                    geometry_.stateLayout.recurrentLayerBytes(),
                                    geometry_.stateLayout.convolutionBytes()};
-  const ops::GdnDecodeBuffers gdn{b.gdnPacked[layer], mixer.convolutionWeights, b.currentGdnStates,
-                                  b.nextGdnStates, b.gdnMixed[layer], mixer.decay, mixer.timeBias,
-                                  b.gdnDecay[layer], b.gdnBeta[layer], mixer.mixerNorm, b.gdnHidden,
-                                  step.wide ? ops::LinearScratch{} : b.linearScratch};
+  ops::GdnDecodeBuffers gdn{b.gdnPacked[layer], mixer.convolutionWeights, b.currentGdnStates,
+                            b.nextGdnStates, b.gdnMixed[layer], mixer.decay, mixer.timeBias,
+                            b.gdnDecay[layer], b.gdnBeta[layer], mixer.mixerNorm, b.gdnHidden,
+                            step.wide ? ops::LinearScratch{} : b.linearScratch};
+  if (b.gdnDefer)
+    gdn.defer = {true, b.gdnPendingRows, b.gdnDeferBase, b.gdnPendingMixed[layer], b.gdnPendingDecay[layer],
+                 b.gdnPendingBeta[layer]};
   // A wide lookup's GDN writes plain rows; the out-projection prepares its own input.
   ops::PreparedInput hidden{};
   if (step.wide)
@@ -614,6 +620,38 @@ void QwenTarget::addStateCommit(metal::CommandGraph &graph,
       {geometry_.stateLayout.convolutionLayerBytes(),
        geometry_.stateLayout.recurrentLayerBytes(),
        geometry_.stateLayout.convolutionBytes()});
+}
+
+bool QwenTarget::gdnDeferSupported() const {
+  const auto *dense = std::get_if<0>(&weights_);
+  if (geometry_.ffnKind != QwenFfnKind::Dense || !dense)
+    return false;
+  for (const auto &layer : (*dense)->layers)
+    if (const auto *mixer = std::get_if<QwenGdnWeights>(&layer.mixer)) {
+      const ops::LinearPlan plan =
+          operators_.linear().decodePlan(mixer->outputProjection, 1, ops::LinearEpilogue::Residual);
+      return ops::GDN::deferRoute(
+          geometry_.gdnShape(),
+          ops::GDN::outputInput(plan, geometry_.gdnShape(), mixer->outputHeadOrder, mixer->mixerNorm));
+    }
+  return false;
+}
+
+void QwenTarget::addStateCommitConv(metal::CommandGraph &graph, QwenTargetCommitBuffers buffers) const {
+  ops::GDN::addCommitConv(
+      graph,
+      {std::move(buffers.packed), std::move(buffers.mixed), std::move(buffers.decay), std::move(buffers.beta),
+       buffers.currentStates, buffers.nextStates, std::move(buffers.retainedCounts)},
+      geometry_.gdnShape(), geometry_.stateLayout.layers,
+      {geometry_.stateLayout.convolutionLayerBytes(), geometry_.stateLayout.recurrentLayerBytes(),
+       geometry_.stateLayout.convolutionBytes()});
+}
+
+void QwenTarget::addStateFlush(metal::CommandGraph &graph, ops::GdnFlushBuffers buffers, uint32_t rows,
+                               uint32_t slot) const {
+  ops::GDN::addFlush(graph, std::move(buffers), geometry_.gdnShape(), geometry_.stateLayout.layers, rows, slot,
+                     {geometry_.stateLayout.convolutionLayerBytes(), geometry_.stateLayout.recurrentLayerBytes(),
+                      geometry_.stateLayout.convolutionBytes()});
 }
 
 uint32_t QwenTarget::rowStableVerifyRows() const {

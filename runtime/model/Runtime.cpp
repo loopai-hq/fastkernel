@@ -236,6 +236,10 @@ struct Runtime::Impl {
   struct Request final {
     uint64_t id = 0;
     uint32_t stateLane = 0;
+    // SPLASH_GDN_DEFER: this cycle defers its recurrent GDN commit (decided
+    // before its graph), with its rows at verify scratch lane slot gdnDeferSlot.
+    bool gdnDeferCycle = false;
+    uint32_t gdnDeferSlot = 0;
     bool resident = false;
     bool promptComplete = false;
     // Rebuild state from already-emitted tokens without sampling an initial
@@ -446,6 +450,23 @@ struct Runtime::Impl {
   ops::AneFfn *aneFfn;
   // The widest wide lookup this device keeps row-exact (8: none).
   uint32_t stableVerifyRows = kDecodeRows;
+  // SPLASH_GDN_DEFER (fastkernel; default on; read per cycle): a one-lane value-parts
+  // verify commits only the convolution carry and leaves its recurrent rows
+  // pending; the request's next such verify replays them in its scan, from the
+  // state before them (the lane's next cell) into its current cell, and scans
+  // on from there. Anything else that reads the state first lands them with a
+  // flush command of its own (flushGdn): a step that is not that request's
+  // next one-lane verify, a prefill, a snapshot. A pending request's rows wait
+  // in the verify scratch's lane slot 0 or 1 of each layer, alternating, so
+  // the next scan's prologue writes the other slot.
+  struct GdnPending final {
+    uint64_t requestId = 0;
+    uint32_t stateLane = 0;
+    uint32_t rows = 0;
+    uint32_t slot = 0;
+  };
+  std::optional<GdnPending> gdnPending;
+  std::optional<bool> gdnDeferRoute;
   // SPLASH_DRAFT_AHEAD: the block in flight behind the last decode command.
   struct DraftAhead final {
     uint32_t lanes = 0;
@@ -563,6 +584,14 @@ struct Runtime::Impl {
     sampling.addAcceptance(graph, acceptanceBuffers(1), retained, blockPolicies,
                            geometry.target.stopTokens[0],
                            geometry.target.stopTokens[1]);
+    // SPLASH_SAMPLER_TOPK32: a sampled lane with a top-k of at most 32 and
+    // no min-p searches its shards' top tokens.
+    const std::array<ops::SamplingPolicy, 1> topTokens{
+        {{.topK = 20, .temperature = 1.0F, .topP = 0.95F}}};
+    sampling.addInitial(graph, topTokens, samplingBuffers(1), 0,
+                        geometry.target.stopTokens[0],
+                        geometry.target.stopTokens[1],
+                        {penaltyTable, std::span(stateLanes).first(1)});
     backend.preparePipelines(graph.dispatches());
   }
 
@@ -1943,6 +1972,36 @@ struct Runtime::Impl {
       gdnBeta[layer] = decodeArena->gdnBatchSlice(
           DecodeTensor::VerifyBetaBase, layer, storage);
     }
+    // SPLASH_GDN_DEFER: this cycle's rows go to the lane slot the pending
+    // rows (if any) do not use; the scans replay those from the next cell.
+    std::vector<MetalBuffer> pendingMixed, pendingDecay, pendingBeta;
+    if (!wide && lanes == 1 && entries[0]->gdnDeferCycle) {
+      Request &entry = *entries[0];
+      if (gdnPending && gdnPending->requestId != entry.id)
+        throw std::logic_error("another request's GDN commit is pending");
+      const uint32_t rows = gdnPending ? gdnPending->rows : 0;
+      const uint32_t pendingSlot = gdnPending ? gdnPending->slot : 1;
+      entry.gdnDeferSlot = 1 - pendingSlot;
+      pendingMixed.resize(gdnLayers);
+      pendingDecay.resize(gdnLayers);
+      pendingBeta.resize(gdnLayers);
+      for (uint32_t layer = 0; layer < gdnLayers; ++layer) {
+        gdnMixed[layer] = decodeArena->gdnLaneSlice(DecodeTensor::VerifyMixedBase, layer, entry.gdnDeferSlot);
+        gdnDecay[layer] = decodeArena->gdnLaneSlice(DecodeTensor::VerifyDecayBase, layer, entry.gdnDeferSlot);
+        gdnBeta[layer] = decodeArena->gdnLaneSlice(DecodeTensor::VerifyBetaBase, layer, entry.gdnDeferSlot);
+        pendingMixed[layer] = decodeArena->gdnLaneSlice(DecodeTensor::VerifyMixedBase, layer, pendingSlot);
+        pendingDecay[layer] = decodeArena->gdnLaneSlice(DecodeTensor::VerifyDecayBase, layer, pendingSlot);
+        pendingBeta[layer] = decodeArena->gdnLaneSlice(DecodeTensor::VerifyBetaBase, layer, pendingSlot);
+      }
+      buffers.gdnDefer = true;
+      buffers.gdnPendingRows = rows;
+      buffers.gdnDeferBase = rows ? states.next(entry.stateLane).stateBase : states.current(entry.stateLane).stateBase;
+      buffers.gdnPendingMixed = pendingMixed;
+      buffers.gdnPendingDecay = pendingDecay;
+      buffers.gdnPendingBeta = pendingBeta;
+    } else if (gdnPending) {
+      throw std::logic_error("a pending GDN commit was not flushed before its state was read");
+    }
     for (uint32_t layer = 0; layer < attentionLayers; ++layer) {
       chunkKeys[layer] = decodeArena->attentionBatchSlice(
           DecodeTensor::ChunkKeysBase, layer, storage);
@@ -2051,6 +2110,33 @@ struct Runtime::Impl {
         decodeArena->batchSlice(DecodeTensor::InputTokens, lanes), lanes);
   }
 
+  // SPLASH_GDN_DEFER (default on; =0 off): whether a step of `width` lanes
+  // defers its GDN commit.
+  bool gdnDeferAllowed(uint32_t width, bool wide) {
+    if (width != 1 || wide || !metal::envSwitch("SPLASH_GDN_DEFER"))
+      return false;
+    if (!gdnDeferRoute)
+      gdnDeferRoute = targetModel.gdnDeferSupported();
+    return *gdnDeferRoute;
+  }
+
+  // SPLASH_GDN_DEFER: the pending recurrent commit as a command of its own,
+  // completed before this returns (and before anything is encoded after it).
+  void flushGdn() {
+    if (!gdnPending)
+      return;
+    CommandGraph graph;
+    targetModel.addStateFlush(
+        graph,
+        {decodeArena->gdnStorage(DecodeTensor::VerifyMixedBase),
+         decodeArena->gdnStorage(DecodeTensor::VerifyDecayBase),
+         decodeArena->gdnStorage(DecodeTensor::VerifyBetaBase), states.next(gdnPending->stateLane).stateBase,
+         states.current(gdnPending->stateLane).stateBase},
+        gdnPending->rows, gdnPending->slot);
+    static_cast<void>(backend.submitCommandAsync(graph.dispatches(), {}).wait());
+    gdnPending.reset();
+  }
+
   // wide: one request's aliased lanes, whose total retained count lane 0 holds.
   void encodeBatchGdnCommit(CommandGraph &graph,
                             std::span<Request *const> lanes, bool wide = false) {
@@ -2075,6 +2161,8 @@ struct Runtime::Impl {
         decodeArena->batchSlice(DecodeTensor::RetainedCount, width)};
     if (wide)
       targetModel.addStateCommit16(graph, std::move(buffers), decodeArena->wideConvolutionScratch(), width);
+    else if (width == 1 && lanes[0]->gdnDeferCycle)  // SPLASH_GDN_DEFER: the carry only
+      targetModel.addStateCommitConv(graph, std::move(buffers));
     else
       targetModel.addStateCommit(graph, std::move(buffers), width);
   }
@@ -2185,7 +2273,8 @@ struct Runtime::Impl {
       Request &entry = *laneResult.request;
       if (!laneResult.failure.empty()) {
         // The cycle's state and tokens are not committed; the engine ends
-        // the request.
+        // the request (Runtime::end drops its pending GDN commit).
+        entry.gdnDeferCycle = false;
         entry.maskWords.clear();
         entry.verifyMaskInFlight = false;
         results.push_back({.requestId = entry.id,
@@ -2202,6 +2291,10 @@ struct Runtime::Impl {
       noteDraftHeadTokens(entry, output);
 
       states.swapParity(entry.stateLane);
+      // SPLASH_GDN_DEFER: its recurrent rows wait for the next scan or a flush,
+      // replayed from the cell that is now next.
+      if (std::exchange(entry.gdnDeferCycle, false))
+        gdnPending = GdnPending{entry.id, entry.stateLane, laneResult.retained, entry.gdnDeferSlot};
       const uint64_t nextLength =
           items[lane].logicalPosition + laneResult.retained;
       states.updateLengths(
@@ -2755,6 +2848,8 @@ void Runtime::suspend(uint64_t requestId) {
   if (!entry.resident || entry.verifyMaskInFlight) {
     throw std::logic_error("Qwen request cannot be suspended");
   }
+  if (impl_->gdnPending && impl_->gdnPending->requestId == requestId)
+    impl_->gdnPending.reset();  // SPLASH_GDN_DEFER: the lane's state goes
   impl_->states.releaseLane(entry.stateLane, requestId);
   impl_->pageTableBindings[entry.stateLane] = {};
   impl_->releaseImages(entry);
@@ -2922,6 +3017,7 @@ Runtime::prefillAsync(const BatchPlan &plan,
     throw std::invalid_argument("Qwen prefill cannot resume a mask plan");
   }
   impl_->retireAhead();  // SPLASH_DRAFT_AHEAD: prefill writes lane buffers
+  impl_->flushGdn();     // SPLASH_GDN_DEFER
 
   std::array<Impl::Request *, kLaneCount> entries{};
   // Each request's draws before the chunk, which a rerun of it restores.
@@ -3189,6 +3285,14 @@ Runtime::decodeAsync(const BatchPlan &plan,
   }
   const uint32_t physicalWidth = wide ? wide->tiles : width;
   const uint32_t ropeRows = physicalWidth * kDecodeRows;
+  // SPLASH_GDN_DEFER: decided before the graph; a pending commit this step
+  // does not take (another request's, or this one's on another route) lands
+  // first.
+  const bool gdnDefer = impl_->gdnDeferAllowed(width, wide.has_value());
+  if (impl_->gdnPending && !(gdnDefer && impl_->gdnPending->requestId == requests[0]->id))
+    impl_->flushGdn();
+  for (uint32_t lane = 0; lane < width; ++lane)
+    requests[lane]->gdnDeferCycle = gdnDefer;
   CommandGraph commandGraph;
   const Impl::StreamedHeadGuard streamGuard{impl_->backend};
   if (const size_t chunk = Impl::streamChunk(); chunk && !constrained)
@@ -3251,7 +3355,11 @@ uint32_t Runtime::residentLane(uint64_t requestId) {
   return entry.stateLane;
 }
 
+void Runtime::settleState() { impl_->flushGdn(); }
+
 std::shared_ptr<const CompositeState> Runtime::snapshot(uint64_t requestId) {
+  if (impl_->gdnPending && impl_->gdnPending->requestId == requestId)
+    impl_->flushGdn();  // SPLASH_GDN_DEFER
   std::shared_ptr<const CompositeState> state =
       impl_->states.snapshot(residentLane(requestId));
   if (!state)
@@ -3269,6 +3377,8 @@ bool Runtime::canSnapshotToDisk() const noexcept {
 
 std::unique_ptr<StateOffload>
 Runtime::snapshotToDisk(uint64_t requestId, std::function<void()> completion) {
+  if (impl_->gdnPending && impl_->gdnPending->requestId == requestId)
+    impl_->flushGdn();  // SPLASH_GDN_DEFER
   return impl_->states.snapshotToDisk(residentLane(requestId), std::move(completion));
 }
 
@@ -3326,6 +3436,8 @@ void Runtime::end(uint64_t requestId) {
   if (found == impl_->requests.end())
     return;
   impl_->retireAheadFor(requestId);  // SPLASH_DRAFT_AHEAD: its ring is released
+  if (impl_->gdnPending && impl_->gdnPending->requestId == requestId)
+    impl_->gdnPending.reset();  // SPLASH_GDN_DEFER: the lane's state goes
   if (impl_->requestStats && impl_->draftAheadOn())
     std::fprintf(stderr, "draft_ahead request=%llu launched=%llu adopted=%llu\n",
                  static_cast<unsigned long long>(requestId),

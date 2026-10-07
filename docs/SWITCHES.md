@@ -30,8 +30,11 @@ fastkernel's changes to Splash each have an environment variable. Set it in fron
 | `SPLASH_STAGED_NORM_WIDE` | on | Wide RMS norms stage their row in GPU threadgroup memory. Same output bytes. |
 | `SPLASH_GDN_VALUE_PARTS` | 4 | The GDN layers' state update runs in four parallel parts. `0` turns it off. |
 | `SPLASH_GDN_FUSED_SUMS` | on | The GDN output kernel also prepares the next projection's input sums. |
+| `SPLASH_GDN_SCAN_NOSTORE` | on | The GDN layers' checking scans don't store their running state; the commit replays the kept rows instead, with the same bits. `0`: the scans store it. |
+| `SPLASH_GDN_DEFER` | on | One request: each step's GDN state commit runs inside the next step's scan instead of as its own GPU work. `0`: it commits at once. |
 | `SPLASH_WIDE_GDN_SINGLE` | parts | Wide checks run each GDN layer as one pass, in four parts. `1`: one pass. `0`: Splash's chain of small launches. |
 | `SPLASH_BLOCK_VERIFY` | on | Sampled answers: the full model judges the draft's guesses as one block. |
+| `SPLASH_SAMPLER_TOPK32` | on | Sampled answers with top-k at most 32 and no min-p: the top-k and top-p search reads each vocabulary shard's 32 most likely tokens instead of the whole vocabulary; the picks are the same. `0`: the whole vocabulary. |
 | `SPLASH_DRAFT_AHEAD` | on | The next draft runs on the GPU while the CPU reads the current result. |
 | `SPLASH_DRAFT_AHEAD_GRAMMAR` | on | Drafting ahead also runs for constrained requests, such as tool calls. |
 | `SPLASH_DRAFT_AHEAD_LOOKUP_QUIET` | 8 | Drafting ahead starts after this many steps without a prompt-lookup step. |

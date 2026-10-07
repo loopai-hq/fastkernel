@@ -48,6 +48,9 @@ public:
   [[nodiscard]] std::optional<std::string>
   provideMask(uint64_t requestId, std::span<const uint32_t> words) override;
   void end(uint64_t requestId) override;
+  // SPLASH_GDN_DEFER: lands a deferred GDN commit, so the state storage can
+  // be read directly (tests); the runtime's own readers settle first anyway.
+  void settleState();
 
   [[nodiscard]] WarmupStepResult warmupPrefill(uint32_t rows) override;
   [[nodiscard]] WarmupStepResult

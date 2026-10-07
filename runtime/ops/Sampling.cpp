@@ -27,6 +27,16 @@ uint32_t effectiveTopK(const SamplingPolicy &policy,
 }
 constexpr uint32_t kPenaltyThreads = 256;
 
+// SPLASH_SAMPLER_TOPK32: every sampled lane of the selection keeps at most
+// SPLASH_SAMPLER_TOP_TOKENS tokens by top-k and none by min-p.
+bool keepsTopTokens(const TargetSamplingParams &params, uint32_t lanes) noexcept {
+  for (uint32_t lane = 0; lane < lanes; ++lane)
+    if ((params.sampling_mask & (uint32_t{1} << lane)) &&
+        (params.top_k[lane] > SPLASH_SAMPLER_TOP_TOKENS || params.min_p[lane] > 0.0F))
+      return false;
+  return true;
+}
+
 void requireVocabulary(std::span<const uint32_t> tokens, size_t vocabulary) {
   if (std::any_of(tokens.begin(), tokens.end(),
                   [&](uint32_t token) { return token >= vocabulary; }))
@@ -311,7 +321,22 @@ void Sampling::addSelection(metal::CommandGraph &graph, const TargetSamplingPara
                buffers.outputTokens},
               params, {selected, 1, 1}, {32, 1, 1});
   }
-  if (params.sampling_mask) {
+  if (!params.sampling_mask)
+    return;
+  // SPLASH_SAMPLER_TOPK32 (default on; =0 searches every row over the whole
+  // vocabulary, upstream's path; same records either way), read per
+  // selection so an in-process A/B can switch it between cycles. The shards'
+  // top token ids wait in the draw ranges, which the draw writes only after
+  // the search reads them.
+  if (metal::envSwitch("SPLASH_SAMPLER_TOPK32") && keepsTopTokens(params, lanes)) {
+    graph.add("decode_sample_mass_top32_sharded",
+              {buffers.logits, buffers.constraintMasks, buffers.partialMasses, buffers.vocabularyRanges},
+              params, {selected * kTargetShards, 1, 1});
+    graph.add("decode_sample_vocabulary_search_top32",
+              {buffers.logits, buffers.constraintMasks, buffers.partialMasses, buffers.vocabularyRanges,
+               buffers.vocabularyRows},
+              params, {selected, 1, 1}, {kVocabularyThreads, 1, 1});
+  } else {
     graph.add("decode_sample_mass_sharded",
               {buffers.logits, buffers.constraintMasks, buffers.partialMasses},
               params, {selected * kTargetShards, 1, 1});
@@ -319,23 +344,23 @@ void Sampling::addSelection(metal::CommandGraph &graph, const TargetSamplingPara
               {buffers.logits, buffers.constraintMasks, buffers.partialMasses,
                buffers.vocabularyRows},
               params, {selected, 1, 1}, {kVocabularyThreads, 1, 1});
-    if (block) {
-      graph.add("decode_sample_vocabulary_draw_block",
-                {buffers.logits, buffers.constraintMasks, buffers.vocabularyRows, buffers.inputTokens,
-                 buffers.draftCandidates, buffers.draftProbabilities, buffers.uniforms, buffers.outputTokens,
-                 buffers.vocabularyRanges, buffers.vocabularyArrivals, buffers.candidateRows},
-                params, {selected * kVocabularyGroups, 1, 1}, {kVocabularyThreads, 1, 1});
-      return;
-    }
-    graph.add("decode_sample_vocabulary_draw",
-              {buffers.logits, buffers.constraintMasks, buffers.vocabularyRows,
-               buffers.inputTokens, buffers.draftCandidates,
-               buffers.draftProbabilities, buffers.uniforms,
-               buffers.outputTokens, buffers.vocabularyRanges,
-               buffers.vocabularyArrivals},
-              params, {selected * kVocabularyGroups, 1, 1},
-              {kVocabularyThreads, 1, 1});
   }
+  if (block) {
+    graph.add("decode_sample_vocabulary_draw_block",
+              {buffers.logits, buffers.constraintMasks, buffers.vocabularyRows, buffers.inputTokens,
+               buffers.draftCandidates, buffers.draftProbabilities, buffers.uniforms, buffers.outputTokens,
+               buffers.vocabularyRanges, buffers.vocabularyArrivals, buffers.candidateRows},
+              params, {selected * kVocabularyGroups, 1, 1}, {kVocabularyThreads, 1, 1});
+    return;
+  }
+  graph.add("decode_sample_vocabulary_draw",
+            {buffers.logits, buffers.constraintMasks, buffers.vocabularyRows,
+             buffers.inputTokens, buffers.draftCandidates,
+             buffers.draftProbabilities, buffers.uniforms,
+             buffers.outputTokens, buffers.vocabularyRanges,
+             buffers.vocabularyArrivals},
+            params, {selected * kVocabularyGroups, 1, 1},
+            {kVocabularyThreads, 1, 1});
 }
 
 void Sampling::addAcceptance(
