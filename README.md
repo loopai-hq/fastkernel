@@ -26,7 +26,7 @@ replays of measured token timings.</sub></p>
 fastkernel runs the Qwen3.8-27B and Qwen3.6-35B-A3B AI models on your own Mac. Chat with them in your browser, or
 connect a coding agent or any other app.
 
-fastkernel 1.1.0 is built on Splash 1.3.0, the latest Splash. On an M5 Max it writes answers 1.11×
+fastkernel 1.1.3 is built on Splash 1.3.0, the latest Splash. On an M5 Max it writes answers 1.11×
 faster than Splash 1.3.0, and a repeated prompt starts in 0.1 s from its prompt cache. It brings everything new in
 Splash 1.3.0. A small draft model guesses ahead, and the full model checks every token before it
 keeps it.
@@ -127,7 +127,7 @@ cp -R .claude/skills/fastkernel ~/.agents/skills/    # Codex
 
 ## What's different from Splash
 
-- **Built on Splash 1.3.0.** fastkernel 1.1.0 brings fastkernel's speedups onto the latest Splash, with its prompt
+- **Built on Splash 1.3.0.** fastkernel 1.1.3 brings fastkernel's speedups onto the latest Splash, with its prompt
   reading and prompt cache: a repeated prompt starts in 0.1 s.
 - **Same model, same checking.** A small draft model guesses the next few tokens. The full model checks every guess
   and keeps only the ones it agrees with.
@@ -147,6 +147,6 @@ fastkernel is licensed under the Apache License 2.0 ([LICENSE](LICENSE), [NOTICE
 the NOTICE file and credit fastkernel.
 
 Thank you to [Inco AI](https://github.com/incoai) for [Splash](https://github.com/incoai/splash), the Apache-2.0 engine
-fastkernel is built on. fastkernel 1.1.0 is built on Splash 1.3.0. Splash's own README:
+fastkernel is built on. fastkernel 1.1.3 is built on Splash 1.3.0. Splash's own README:
 [docs/SPLASH-README.md](docs/SPLASH-README.md). Third-party code that Splash ships keeps its own license:
 [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES). Each file we changed from Splash says "Modified by meowkernels."
