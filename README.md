@@ -2,7 +2,8 @@
 <h1 align="center">fastkernel</h1>
 
 <p align="center"><b>The fastest inference engine for Qwen3.8-27B and Qwen3.6-35B-A3B on Apple Silicon.</b><br>
-1.11× faster than Splash 1.3.0 on an M5 Max · every token still checked by the full model</p>
+Qwen3.8-27B: up to 452 tok/s editing code · 1.11× faster than Splash 1.3.0<br>
+measured on an M5 Max · every token still checked by the full model</p>
 
 <p align="center"><a href="docs/media/speed-race.mp4"><img src="docs/media/speed-race.webp" width="720" alt="fastkernel 1.1.0, Splash 1.3.0 and MLX-LM write the same 708-token answer side by side on an M5 Max. fastkernel finishes in 3.97 s, Splash in 4.07 s, MLX-LM in 23.1 s."></a><br>
 <sub><b>Same prompt, same 708-token answer:</b> fastkernel 3.97 s · Splash 1.3.0 4.07 s · MLX-LM 23.1 s.
@@ -32,6 +33,17 @@ Splash 1.3.0. A small draft model guesses ahead, and the full model checks every
 keeps it.
 
 ## M5 Max (128 GB)
+
+**Speed you see** (Qwen3.8-27B 4-bit, fastkernel 1.1.0, greedy, measured from the stream, 2026-10-07):
+
+| Task | Peak | Average | First token |
+|---|---:|---:|---:|
+| Edit a pasted 210-line file | **452 tok/s** | **321 tok/s** | 2.3 s |
+| Write a Python todo app | 205 tok/s | 184 tok/s | 0.14 s |
+| Write a particle-galaxy app | 198 tok/s | 149 tok/s | 0.21 s |
+
+Peak is the most tokens in any one second; average runs from the first token to the last. Each row is one run, the
+first (nothing cached); the first token includes reading the prompt, here a 1,825-token pasted file.
 
 fastkernel 1.1.0 vs other engines (2026-10-07):
 
