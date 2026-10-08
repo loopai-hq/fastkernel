@@ -5,6 +5,17 @@
 Qwen3.8-27B: up to 452 tok/s editing code · 1.36× lithos-metal (greedy, 10 prompts) · 1.11× faster than Splash 1.3.0<br>
 measured on an M5 Max · every token still checked by the full model</p>
 
+<p align="center"><a href="docs/media/lithos-tip.mp4"><img src="docs/media/lithos-tip.webp" width="720" alt="fastkernel 1.1.3 and lithos-metal 0.1.2 answer lithos-metal's launch-video prompt, a tip calculator, side by side on the same M5 Max. fastkernel writes 3,000 tokens in 20.4 s, lithos-metal in 27.0 s."></a><br>
+<sub><b>lithos-metal's own launch-video prompt, same Mac:</b> fastkernel 1.1.3 writes 3,000 tokens in 20.4 s (147.8 tok/s),
+lithos-metal 0.1.2 in 27.0 s (111.8 tok/s). <a href="docs/media/lithos-tip.mp4">Video</a></sub></p>
+
+<p align="center"><a href="docs/media/lithos-edit.mp4"><img src="docs/media/lithos-edit.webp" width="720" alt="fastkernel 1.1.3 and lithos-metal 0.1.2 edit the same pasted 210-line Python file. fastkernel writes the first 1,884 tokens in 8.1 s, lithos-metal in 16.5 s."></a><br>
+<sub><b>Editing a pasted 210-line file:</b> the first 1,884 tokens take fastkernel 1.1.3 8.1 s and lithos-metal 0.1.2 16.5 s
+(321 vs 142 tok/s). <a href="docs/media/lithos-edit.mp4">Video</a></sub></p>
+
+<p align="center"><sub>Qwen3.8-27B on an M5 Max (128 GB, macOS 27.2), greedy, one server at a time (2026-10-09). lithos-metal runs NVIDIA's
+NVFP4 checkpoint with its DSpark draft head. Real-time replays of measured token timings.</sub></p>
+
 <p align="center"><a href="docs/media/speed-race.mp4"><img src="docs/media/speed-race.webp" width="720" alt="fastkernel 1.1.0, Splash 1.3.0 and MLX-LM write the same 708-token answer side by side on an M5 Max. fastkernel finishes in 3.97 s, Splash in 4.07 s, MLX-LM in 23.1 s."></a><br>
 <sub><b>Same prompt, same 708-token answer:</b> fastkernel 3.97 s · Splash 1.3.0 4.07 s · MLX-LM 23.1 s.
 <a href="docs/media/speed-race.mp4">Video</a></sub></p>
