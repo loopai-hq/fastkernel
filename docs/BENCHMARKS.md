@@ -19,6 +19,52 @@ confidence interval, written [low, high], is the range the true average falls in
 
 ## M5 Max (40-core GPU, 128 GB)
 
+### fastkernel 1.1.3 vs lithos-metal 0.1.2, greedy, 10 prompts
+
+On our 128 GB M5 Max running macOS 27.2, fastkernel 1.1.3 delivered 1.36× the client-observed decode throughput of
+lithos-metal 0.1.2 across these 10 prompts (geometric mean; one ABBA session, greedy decoding, thinking off, output
+capped at 1,024 tokens). The engines used different quantized checkpoints and drafters; task-quality parity was not
+evaluated.
+
+| Prompt | lithos-metal 0.1.2 | fastkernel 1.1.3 | ratio |
+|---|---:|---:|---:|
+| lithos-metal's launch-video prompt (tip calculator) | 105.2 | 136.0 | 1.29× |
+| code | 144.3 | 180.8 | 1.25× |
+| math | 116.3 | 166.0 | 1.43× |
+| code file, 2,247 tokens | 84.8 | 101.8 | 1.20× |
+| chat 1 | 67.0 | 85.0 | 1.27× |
+| chat 2 | 61.3 | 80.4 | 1.31× |
+| chat 3 | 56.3 | 91.4 | 1.62× |
+| chat 4 | 55.7 | 88.8 | 1.59× |
+| chat 5 | 55.7 | 92.4 | 1.66× |
+| multilingual | 55.1 | 62.2 | 1.13× |
+| **Geometric mean** | | | **1.36×** |
+
+Decode tok/s = (completion tokens − 1) / (last − first streamed chunk), mean of two runs per prompt. The interval
+around 1.36× is 1.26–1.48×, a prompt-bootstrap interval for this one session; it does not measure session-to-session
+variation.
+
+<details>
+<summary>Settings and limits</summary>
+
+- **Machine:** M5 Max (40-core GPU, 128 GB), macOS 27.2, AC power, thermal state nominal. No other model server was
+  running; an earlier run with a second model server resident slowed both engines and is not used.
+- **Order:** one server at a time: fastkernel, lithos-metal, lithos-metal, fastkernel. Each block ran at least 120 s of
+  warm-up requests, then the 10 prompts.
+- **fastkernel 1.1.3:** the release package, `SPLASH_DRAFT_HEAD_IDS=$PWD/data/head-ranked.u32 ./splash serve --model
+  incoai/Qwen3.8-27B-Splash`, plus `--port` and `--max-context 40K`.
+- **lithos-metal 0.1.2:** built from source at 236475f, `lithos-metal serve --model nvidia/Qwen3.8-27B-NVFP4` (checkpoint
+  482ca0f, DSpark head LithosAI/Qwen3.8-27B-DSpark-NVFP4 b169bc4), plus `--port` and `--max-context 34816` (its default
+  is 32,768; we did not test whether the larger setting changes its speed).
+- **Requests:** greedy (temperature 0), reasoning_effort "none" (lithos-metal serves without thinking), streamed, at most
+  1,024 tokens. Four prompts reach the cap on both engines, including the tip calculator, so this measures decode
+  speed over a bounded answer, not time to a finished answer.
+- **Prompts:** the 12-prompt Splash 1.3.0 set without its three long prompts (no conclusion here about long contexts),
+  plus the prompt from lithos-metal's launch video. Answers differ in length and content between the engines, so this
+  compares delivered throughput, not identical work. Answer quality was not compared.
+
+</details>
+
 ### Sampled answers: fastkernel 1.1.0 vs Splash 1.3.0 and fastkernel 1.0.0, 12 prompts
 
 fastkernel 1.1.0 is this release, built on Splash 1.3.0. All three servers ran at the same time, taking turns on each

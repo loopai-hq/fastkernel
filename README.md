@@ -2,7 +2,7 @@
 <h1 align="center">fastkernel</h1>
 
 <p align="center"><b>The fastest inference engine for Qwen3.8-27B and Qwen3.6-35B-A3B on Apple Silicon.</b><br>
-Qwen3.8-27B: up to 452 tok/s editing code · 1.11× faster than Splash 1.3.0<br>
+Qwen3.8-27B: up to 452 tok/s editing code · 1.36× lithos-metal (greedy, 10 prompts) · 1.11× faster than Splash 1.3.0<br>
 measured on an M5 Max · every token still checked by the full model</p>
 
 <p align="center"><a href="docs/media/speed-race.mp4"><img src="docs/media/speed-race.webp" width="720" alt="fastkernel 1.1.0, Splash 1.3.0 and MLX-LM write the same 708-token answer side by side on an M5 Max. fastkernel finishes in 3.97 s, Splash in 4.07 s, MLX-LM in 23.1 s."></a><br>
@@ -44,6 +44,27 @@ keeps it.
 
 Peak is the most tokens in any one second; average runs from the first token to the last. Each row is one run, the
 first (nothing cached); the first token includes reading the prompt, here a 1,825-token pasted file.
+
+**fastkernel 1.1.3 vs lithos-metal 0.1.2, Qwen3.8-27B** (2026-10-09):
+
+On our 128 GB M5 Max running macOS 27.2, fastkernel 1.1.3 delivered 1.36× the client-observed decode throughput of
+lithos-metal 0.1.2 across these 10 prompts (geometric mean; one ABBA session, greedy decoding, thinking off, output
+capped at 1,024 tokens). The engines used different quantized checkpoints and drafters; task-quality parity was not
+evaluated.
+
+| Prompt | lithos-metal 0.1.2 | fastkernel 1.1.3 |
+|---|---:|---:|
+| lithos-metal's launch-video prompt (tip calculator) | 105.2 | **136.0** |
+| Code | 144.3 | **180.8** |
+| Math | 116.3 | **166.0** |
+| Code file | 84.8 | **101.8** |
+| Chat (5 prompts) | 55.7–67.0 | **80.4–92.4** |
+| Multilingual | 55.1 | **62.2** |
+
+Decode tok/s, mean of two runs per prompt. Same Mac, one server at a time in the order fastkernel, lithos-metal,
+lithos-metal, fastkernel, each started with its README command plus port and context size, after at least 120 s of
+warm-up. lithos-metal runs NVIDIA's NVFP4 checkpoint with its DSpark draft head; fastkernel runs the 4-bit Splash
+package with DFlash2. Settings and limits: [docs/BENCHMARKS.md](docs/BENCHMARKS.md#fastkernel-113-vs-lithos-metal-012-greedy-10-prompts).
 
 fastkernel 1.1.0 vs other engines (2026-10-07):
 
