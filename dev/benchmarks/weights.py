@@ -40,7 +40,7 @@ def digests(build: Path, model_root: Path) -> dict:
     engine loads from model_root."""
     tool = Path(build) / WEIGHT_DIGESTS
     result = subprocess.run(
-        [str(tool), str(Path(build) / "splash.metallib"), str(model_root)],
+        [str(tool), str(Path(build) / "pulsar.metallib"), str(model_root)],
         capture_output=True,
         text=True,
     )

@@ -26,7 +26,7 @@ def stage_release(directory):
         for name in names:
             shutil.copy2(package.ROOT / folder / name, root / folder / name)
     (root / "build").mkdir()
-    for name in ("splash", "splash.metallib"):
+    for name in ("pulsar", "pulsar.metallib"):
         (root / "build" / name).write_bytes(b"unused CPU test fixture")
     for name in package.LICENSE_FILES:
         shutil.copy2(package.ROOT / name, root / name)

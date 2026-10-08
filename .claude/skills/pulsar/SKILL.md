@@ -1,13 +1,13 @@
 ---
-name: fastkernel
-description: Install, start, connect and stop fastkernel, the local Qwen3.8-27B and Qwen3.6-35B-A3B server for Apple Silicon. Use when the user wants to run fastkernel or point a coding agent (OpenCode, Claude Code, Codex, Hermes) at it.
+name: pulsar
+description: Install, start, connect and stop Pulsar, the local Qwen3.8-27B and Qwen3.6-35B-A3B server for Apple Silicon. Use when the user wants to run Pulsar or point a coding agent (OpenCode, Claude Code, Codex, Hermes) at it.
 ---
 
-# fastkernel
+# Pulsar
 
-fastkernel serves Qwen3.8-27B or Qwen3.6-35B-A3B on one Apple silicon Mac, with the OpenAI and Anthropic APIs on
-`http://127.0.0.1:8000`. Commands below run from the fastkernel folder (the clone of
-https://github.com/loopai-hq/fastkernel). If you don't know where it is, ask the user.
+Pulsar serves Qwen3.8-27B or Qwen3.6-35B-A3B on one Apple silicon Mac, with the OpenAI and Anthropic APIs on
+`http://127.0.0.1:8000`. Commands below run from the Pulsar folder (the clone of
+https://github.com/loopai-hq/pulsar). If you don't know where it is, ask the user.
 
 ## 1. Check the Mac
 
@@ -24,9 +24,9 @@ make install MODEL=incoai/Qwen3.8-27B-Splash
 
 The first run downloads the model (17.4 GB). For Qwen3.6-35B-A3B, use `MODEL=incoai/Qwen3.6-35B-A3B-Splash`.
 
-No Xcode? Use the prebuilt package instead: download `fastkernel-1.1.3-macos-arm64.tar.gz` from
-https://github.com/loopai-hq/fastkernel/releases, run `tar -xzf` on it, and work in the `fastkernel` folder it
-makes. If `./splash` says macOS quarantined the download, run the `xattr` command it prints. The model downloads on
+No Xcode? Use the prebuilt package instead: download `pulsar-1.1.4-macos-arm64.tar.gz` from
+https://github.com/loopai-hq/pulsar/releases, run `tar -xzf` on it, and work in the `pulsar` folder it
+makes. If `./pulsar` says macOS quarantined the download, run the `xattr` command it prints. The model downloads on
 the first `serve`.
 
 ## 3. Start the server
@@ -34,7 +34,7 @@ the first `serve`.
 Run it in its own terminal or as a background process, and leave it running:
 
 ```bash
-SPLASH_DRAFT_HEAD_IDS=$PWD/data/head-ranked.u32 ./splash serve --model incoai/Qwen3.8-27B-Splash
+SPLASH_DRAFT_HEAD_IDS=$PWD/data/head-ranked.u32 ./pulsar serve --model incoai/Qwen3.8-27B-Splash
 ```
 
 - It's ready when it prints `Ready` and `curl -s http://127.0.0.1:8000/status` shows `"ready": true`.
@@ -45,14 +45,14 @@ SPLASH_DRAFT_HEAD_IDS=$PWD/data/head-ranked.u32 ./splash serve --model incoai/Qw
 
 ## 4. Connect a coding agent
 
-With the server running, from the fastkernel folder:
+With the server running, from the Pulsar folder:
 
 ```bash
-./splash opencode    # or: ./splash claude / ./splash codex / ./splash hermes
+./pulsar opencode    # or: ./pulsar claude / ./pulsar codex / ./pulsar hermes
 ```
 
-- The agent starts pointed at fastkernel, with the model and context limit set.
-- Arguments after `--` go to the agent, e.g. `./splash claude -- -p "hello"`.
+- The agent starts pointed at Pulsar, with the model and context limit set.
+- Arguments after `--` go to the agent, e.g. `./pulsar claude -- -p "hello"`.
 - Set `SPLASH_PORT` if the server isn't on port 8000.
 
 Any other app: OpenAI API at `http://127.0.0.1:8000/v1`, Anthropic API at `http://127.0.0.1:8000`, model

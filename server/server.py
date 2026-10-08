@@ -1566,7 +1566,7 @@ def parse_args(argv=None):
         metavar="OWNER/REPO",
     )
     parser.add_argument("--port", type=int, default=serve_options.DEFAULT_PORT)
-    parser.add_argument("--binary", default=str(ROOT / "build" / "splash"))
+    parser.add_argument("--binary", default=str(ROOT / "build" / "pulsar"))
     serve_options.add_serve_arguments(parser)
     args = parser.parse_args(argv)
     serve_options.check_serve_arguments(parser, args)

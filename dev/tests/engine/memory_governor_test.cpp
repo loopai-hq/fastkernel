@@ -155,7 +155,7 @@ void testAdvertisedContextIsGrantable() {
     kv::Format format;
     uint32_t advertisedTokens;
   };
-  // fastkernel's 2% working-set margin, with no 1 GiB floor, leaves these
+  // Pulsar's 2% working-set margin, with no 1 GiB floor, leaves these
   // working sets more KV than upstream's anchors (69,625 / 253,945 / 129,049).
   for (const Machine &machine :
        {Machine{"32 GB INT8", 32, 2, 3, kv::Format::Int8, 90'105},

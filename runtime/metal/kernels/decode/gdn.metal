@@ -255,7 +255,7 @@ inline void gdn_decode_gate(threadgroup GdnDecodeShared<HeadDim> &shared,
   }
 }
 
-// Grid x is the value heads. SkipFull = false (fastkernel's wide commit
+// Grid x is the value heads. SkipFull = false (Pulsar's wide commit
 // tiles, gdn_wide.h) replays all eight rows too. Conv / Recurrent = false
 // (SPLASH_GDN_DEFER) leave that part of the cell to another dispatch.
 template <uint KeyHeads, uint ValueHeads, uint HeadDim, uint ConvDim,
@@ -545,7 +545,7 @@ GDN_DECODE_ENTRY(verify_gdn_fused_nostore, 16, 48, 128, 10240, 16640, bfloat, fa
 GDN_DECODE_TABLE_ENTRY(verify_gdn_fused_table64_nostore, 16, 48, 128, 10240, 16640, q4sg::Table64, bfloat, false)
 GDN_DECODE_ENTRY(verify_gdn_fused_f32_nostore, 16, 48, 128, 10240, 16640, float, false)
 GDN_DECODE_TABLE_ENTRY(verify_gdn_fused_table16_f32_nostore, 16, 48, 128, 10240, 16640, gguf_sg::Table16, float, false)
-// fastkernel's GDN_FUSED_SUMS (one lane, grid {48, 1}): verify_gdn_fused,
+// Pulsar's GDN_FUSED_SUMS (one lane, grid {48, 1}): verify_gdn_fused,
 // then the split-K out-projection's fp32 sum of each row's 64-input group,
 // [group][row], in decode_linear_q4_split_sums' order: lane and lane + 32,
 // then simd_sum. The gate left each simdgroup's gated row in shared.rows,
@@ -573,6 +573,6 @@ GDN_FUSED_SPLIT_SUMS(verify_gdn_fused_split_sums_nostore, false)
 #undef GDN_DECODE_THREADS
 #undef GDN_DECODE_BUFFERS
 
-// fastkernel's value-parts and wide-lookup GDN kernels.
+// Pulsar's value-parts and wide-lookup GDN kernels.
 #include "metal/kernels/common/gdn_value_parts.h"
 #include "metal/kernels/common/gdn_wide.h"

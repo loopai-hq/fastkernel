@@ -205,7 +205,7 @@ class AgentRunnerTests(unittest.TestCase):
             (generated / "build-identity.json").write_bytes(
                 agent.build_identity.stamp_bytes(identity)
             )
-            binary = root / "build/splash"
+            binary = root / "build/pulsar"
             binary.write_bytes(identity.encode())
             with mock.patch.object(agent, "ROOT", root):
                 self.assertEqual(agent.current_build_id(), identity)
@@ -272,7 +272,7 @@ class AgentRunnerTests(unittest.TestCase):
 
     def test_real_harnesses_accept_exactly_the_ids_splash_serve_accepts(self):
         parsers = {
-            "splash serve": lambda model: agent.launcher.parse_args(
+            "pulsar serve": lambda model: agent.launcher.parse_args(
                 ["serve", "--model", model]
             ),
             "agent_real": lambda model: agent.parse_args(["--model", model]),

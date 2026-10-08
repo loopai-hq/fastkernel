@@ -19,14 +19,14 @@ confidence interval, written [low, high], is the range the true average falls in
 
 ## M5 Max (40-core GPU, 128 GB)
 
-### fastkernel 1.1.3 vs lithos-metal 0.1.2, greedy, 10 prompts
+### Pulsar 1.1.3 vs lithos-metal 0.1.2, greedy, 10 prompts
 
-On our 128 GB M5 Max running macOS 27.2, fastkernel 1.1.3 delivered 1.36× the client-observed decode throughput of
+On our 128 GB M5 Max running macOS 27.2, Pulsar 1.1.3 delivered 1.36× the client-observed decode throughput of
 lithos-metal 0.1.2 across these 10 prompts (geometric mean; one ABBA session, greedy decoding, thinking off, output
 capped at 1,024 tokens). The engines used different quantized checkpoints and drafters; task-quality parity was not
 evaluated.
 
-| Prompt | lithos-metal 0.1.2 | fastkernel 1.1.3 | ratio |
+| Prompt | lithos-metal 0.1.2 | Pulsar 1.1.3 | ratio |
 |---|---:|---:|---:|
 | lithos-metal's launch-video prompt (tip calculator) | 105.2 | 136.0 | 1.29× |
 | code | 144.3 | 180.8 | 1.25× |
@@ -49,9 +49,9 @@ variation.
 
 - **Machine:** M5 Max (40-core GPU, 128 GB), macOS 27.2, AC power, thermal state nominal. No other model server was
   running; an earlier run with a second model server resident slowed both engines and is not used.
-- **Order:** one server at a time: fastkernel, lithos-metal, lithos-metal, fastkernel. Each block ran at least 120 s of
+- **Order:** one server at a time: Pulsar, lithos-metal, lithos-metal, Pulsar. Each block ran at least 120 s of
   warm-up requests, then the 10 prompts.
-- **fastkernel 1.1.3:** the release package, `SPLASH_DRAFT_HEAD_IDS=$PWD/data/head-ranked.u32 ./splash serve --model
+- **Pulsar 1.1.3:** the release package, `SPLASH_DRAFT_HEAD_IDS=$PWD/data/head-ranked.u32 ./pulsar serve --model
   incoai/Qwen3.8-27B-Splash`, plus `--port` and `--max-context 40K`.
 - **lithos-metal 0.1.2:** built from source at 236475f, `lithos-metal serve --model nvidia/Qwen3.8-27B-NVFP4` (checkpoint
   482ca0f, DSpark head LithosAI/Qwen3.8-27B-DSpark-NVFP4 b169bc4), plus `--port` and `--max-context 34816` (its default
@@ -65,24 +65,24 @@ variation.
 
 </details>
 
-### Sampled answers: fastkernel 1.1.0 vs Splash 1.3.0 and fastkernel 1.0.0, 12 prompts
+### Sampled answers: Pulsar 1.1.0 vs Splash 1.3.0 and Pulsar 1.0.0, 12 prompts
 
-fastkernel 1.1.0 is this release, built on Splash 1.3.0. All three servers ran at the same time, taking turns on each
+Pulsar 1.1.0 is this release, built on Splash 1.3.0. All three servers ran at the same time, taking turns on each
 prompt.
 
 | Engine | tok/s | |
 |---|---:|---|
-| **fastkernel 1.1.0** | **99.2** | |
-| fastkernel 1.0.0 | 100.8 | same speed: 0.98× (95% range 0.96–1.00×) |
-| Splash 1.3.0 | 89.0 | fastkernel 1.1.0 is **1.11× faster** (95% range 1.07–1.14×) |
+| **Pulsar 1.1.0** | **99.2** | |
+| Pulsar 1.0.0 | 100.8 | same speed: 0.98× (95% range 0.96–1.00×) |
+| Splash 1.3.0 | 89.0 | Pulsar 1.1.0 is **1.11× faster** (95% range 1.07–1.14×) |
 
-| | fastkernel 1.1.0 | fastkernel 1.0.0 | Splash 1.3.0 |
+| | Pulsar 1.1.0 | Pulsar 1.0.0 | Splash 1.3.0 |
 |---|---:|---:|---:|
 | Chat (5 prompts), tok/s | **76.7** | 79.0 | 68.5 |
 
 Time to first token, for each prompt's first request in the run (nothing cached), in seconds:
 
-| Prompt | fastkernel 1.1.0 | fastkernel 1.0.0 | Splash 1.3.0 |
+| Prompt | Pulsar 1.1.0 | Pulsar 1.0.0 | Splash 1.3.0 |
 |---|---:|---:|---:|
 | code file, 2,247 tokens | 3.1 | 3.2 | 2.7 |
 | long context 2, 4,702 tokens | 6.3 | 6.5 | 5.4 |
@@ -101,11 +101,11 @@ Conditions: 2026-10-07, 03:39–04:01 IST, on AC power, Chrome open.
 - Settings: temperature 1, top-p 0.95, top-k 20, up to 1,024 tokens, reasoning effort medium, seeds 20261501 and
   20261502. The engines took turns on each prompt, and the client timed each answer.
 - tok/s is the mean over prompts of each prompt's mean. A ratio is the geometric mean of the per-prompt ratios, and
-  its 95% range is a bootstrap over prompts. In chat, fastkernel 1.1.0 is 1.12× Splash 1.3.0
-  and 0.97× fastkernel 1.0.0.
-- fastkernel 1.1.0: a release-candidate build with the same GPU kernels as the release, with the official `incoai/Qwen3.8-27B-Splash` package and the Quick
+  its 95% range is a bootstrap over prompts. In chat, Pulsar 1.1.0 is 1.12× Splash 1.3.0
+  and 0.97× Pulsar 1.0.0.
+- Pulsar 1.1.0: a release-candidate build with the same GPU kernels as the release, with the official `incoai/Qwen3.8-27B-Splash` package and the Quick
   start flags (`SPLASH_DRAFT_HEAD_IDS`). Neural Engine prefill was on, its default; its startup timing on this Mac kept prefill on the GPU alone, where no split was faster.
-- fastkernel 1.0.0: the release package with the same model and flags.
+- Pulsar 1.0.0: the release package with the same model and flags.
 - Splash 1.3.0: the release package, running `mlx-community/Qwen3.8-27B-4bit` (revision 3e6447f) with its DFlash 2
   draft, the same weights as the Splash package. Its defaults stayed on, including the Neural Engine prefill split and
   int8 K/V.
@@ -113,7 +113,7 @@ Conditions: 2026-10-07, 03:39–04:01 IST, on AC power, Chrome open.
 
 Per prompt, in tok/s:
 
-| Prompt | fastkernel 1.1.0 | fastkernel 1.0.0 | Splash 1.3.0 |
+| Prompt | Pulsar 1.1.0 | Pulsar 1.0.0 | Splash 1.3.0 |
 |---|---:|---:|---:|
 | chat 1 | 74.7 | 78.6 | 65.1 |
 | chat 2 | 75.6 | 74.8 | 65.8 |
@@ -130,16 +130,16 @@ Per prompt, in tok/s:
 
 </details>
 
-### Sampled answers: fastkernel 1.0.0 vs Splash 1.3.0, 12 prompts
+### Sampled answers: Pulsar 1.0.0 vs Splash 1.3.0, 12 prompts
 
-The same 12 prompts and settings, with the fastkernel 1.0.0 release package against Splash 1.3.0.
+The same 12 prompts and settings, with the Pulsar 1.0.0 release package against Splash 1.3.0.
 
 | Engine | tok/s | |
 |---|---:|---|
-| **fastkernel 1.0.0** | **92.5** | |
-| Splash 1.3.0 | 82.6 | fastkernel 1.0.0 is **1.12× faster** (95% range 1.09–1.15×) |
+| **Pulsar 1.0.0** | **92.5** | |
+| Splash 1.3.0 | 82.6 | Pulsar 1.0.0 is **1.12× faster** (95% range 1.09–1.15×) |
 
-In chat (5 prompts), fastkernel 1.0.0 writes 72.3 tok/s against 62.9, 1.15× faster. On the 6 prompts of the tests
+In chat (5 prompts), Pulsar 1.0.0 writes 72.3 tok/s against 62.9, 1.15× faster. On the 6 prompts of the tests
 below, it writes 109.4 against 97.8.
 
 Conditions: 2026-10-06, 21:24–21:35 IST, on AC power, Chrome and other apps open.
@@ -152,7 +152,7 @@ Conditions: 2026-10-06, 21:24–21:35 IST, on AC power, Chrome and other apps op
 
 Per prompt, in tok/s:
 
-| Prompt | fastkernel 1.0.0 | Splash 1.3.0 |
+| Prompt | Pulsar 1.0.0 | Splash 1.3.0 |
 |---|---:|---:|
 | chat 1 | 76.7 | 61.8 |
 | chat 2 | 69.0 | 60.4 |
@@ -169,13 +169,13 @@ Per prompt, in tok/s:
 
 </details>
 
-### fastkernel 1.1.0 vs MTPLX, AX Engine, MLX-LM and llama.cpp
+### Pulsar 1.1.0 vs MTPLX, AX Engine, MLX-LM and llama.cpp
 
-Each engine ran side by side with the fastkernel 1.1.0 release package, one pair per session, taking turns on each
+Each engine ran side by side with the Pulsar 1.1.0 release package, one pair per session, taking turns on each
 prompt: the 6 standard prompts sampled, or 5 of them greedy for AX Engine (it takes prompts of up to 16K tokens, so the
 agent task is left out).
 
-| Engine | Answers | Its tok/s | fastkernel 1.1.0 tok/s | fastkernel 1.1.0 is |
+| Engine | Answers | Its tok/s | Pulsar 1.1.0 tok/s | Pulsar 1.1.0 is |
 |---|---|---:|---:|---|
 | MTPLX 2.12.0 (Bare-Speed 4-bit + MTP) | sampled | 65.7 | 118.2 | **1.80× faster** (95% range 1.62–1.97×) |
 | AX Engine 7.5.7 (MXFP4 + MTP) | greedy | 38.3 | 119.6 | **3.12× faster** (95% range 2.78–3.48×) |
@@ -191,16 +191,16 @@ requests.
 - Settings: tools/head2head's request body (temperature 1, top-p 0.95, top-k 20, up to 1,024 tokens, reasoning effort
   medium; temperature 0 for AX Engine), seeds 20261501 and 20261502, the engine order alternating by prompt and seed.
   tok/s is the mean of the per-request client decode speeds; the ratio is of those means, with a 95% bootstrap range.
-- fastkernel 1.1.0: the release package, the official `incoai/Qwen3.8-27B-Splash` package and the Quick start flags.
+- Pulsar 1.1.0: the release package, the official `incoai/Qwen3.8-27B-Splash` package and the Quick start flags.
 - MTPLX 2.12.0: `Youssofal/Qwen3.8-27B-MTPLX-Bare-Speed`, its server's defaults (04:49–04:55; 22 of 24 requests warm).
 - AX Engine 7.5.7: `AutomatosX/AX-Qwen3.8-27B-MLX-AXQ-MXFP4-MTP` with `--mlx-mtp-policy required --speculation-profile
   coding` (05:28–05:33; 20 of 20 requests warm).
-- MLX-LM 0.31.3 with mlx 0.32.3: `mlx-community/Qwen3.8-27B-4bit`, the weights fastkernel's package was converted from
+- MLX-LM 0.31.3 with mlx 0.32.3: `mlx-community/Qwen3.8-27B-4bit`, the weights Pulsar's package was converted from
   (05:19–05:28; 17 of 24 requests warm).
 - llama.cpp 0.5.0 (build 11146, Metal): `lmstudio-community/Qwen3.8-27B-GGUF` Q4_K_M, a 40,960-token context and one
   slot (04:33–04:42; 24 of 24 requests warm).
 
-Per prompt, in tok/s (fastkernel 1.1.0 / the other engine, mean of 2 seeds):
+Per prompt, in tok/s (Pulsar 1.1.0 / the other engine, mean of 2 seeds):
 
 | Prompt | vs MTPLX | vs AX Engine | vs MLX-LM | vs llama.cpp |
 |---|---:|---:|---:|---:|
@@ -213,9 +213,9 @@ Per prompt, in tok/s (fastkernel 1.1.0 / the other engine, mean of 2 seeds):
 
 </details>
 
-### Qwen3.6-35B-A3B: fastkernel 1.1.0 vs Splash 1.3.0, 6 prompts
+### Qwen3.6-35B-A3B: Pulsar 1.1.0 vs Splash 1.3.0, 6 prompts
 
-| Answers | fastkernel 1.1.0 tok/s | Splash 1.3.0 tok/s | Ratio (95% range) |
+| Answers | Pulsar 1.1.0 tok/s | Splash 1.3.0 tok/s | Ratio (95% range) |
 |---|---:|---:|---|
 | Sampled | 268.1 | 260.9 | 1.03× (1.00–1.05×) |
 | Greedy | 299.6 | 276.1 | 1.09× (0.99–1.23×) |
@@ -228,7 +228,7 @@ Conditions: 2026-10-07, 05:33–05:36 IST, on AC power, Chrome and LM Studio ope
 - Both servers ran the official `incoai/Qwen3.6-35B-A3B-Splash` package in one session, taking turns on each prompt,
   with the settings of the test above (temperature 1 and 0).
 
-Per prompt, in tok/s (fastkernel 1.1.0 / Splash 1.3.0, mean of 2 seeds):
+Per prompt, in tok/s (Pulsar 1.1.0 / Splash 1.3.0, mean of 2 seeds):
 
 | Prompt | Sampled | Greedy |
 |---|---:|---:|
@@ -247,7 +247,7 @@ The videos at the top of the README replay measured token timings in real time. 
 after another, with greedy answers and 3 runs per prompt (2026-10-07, 04:57–05:14 IST, on AC power, the Mac cool
 ("nominal") for every run). The prompt for each video was picked by a rule fixed before any run.
 
-| Video | Prompt | fastkernel 1.1.0 | Splash 1.3.0 | MLX-LM |
+| Video | Prompt | Pulsar 1.1.0 | Splash 1.3.0 | MLX-LM |
 |---|---|---:|---:|---:|
 | Same answer | a Python command-line todo app; all three engines write the same 708 tokens | 3.97 s (184.5 tok/s) | 4.07 s (179.7 tok/s) | 23.1 s (30.8 tok/s) |
 | Galaxy app | a one-shot particle-galaxy web app | 3,124 tokens in 20.9 s (150.4 tok/s) | the same 3,124 tokens in 22.1 s (141.2 tok/s) | |
@@ -260,24 +260,24 @@ after another, with greedy answers and 3 runs per prompt (2026-10-07, 04:57–05
 - Galaxy app: Splash 1.3.0 reached the 3,500-token limit, so the video compares the time to the same token count. The
   two texts differ from about token 322.
 - Code edit: each engine's first run, so no prompt cache was reused. The texts differ from line 4 (1,894 tokens for
-  fastkernel 1.1.0, 1,884 for the others).
+  Pulsar 1.1.0, 1,884 for the others).
 - Times are from the run each video shows; tok/s is each engine's median decode speed over its 3 runs.
 
 </details>
 
-The tests below ran fastkernel 1.0.0 and its pre-release builds, 2026-09-26 to 2026-09-30.
+The tests below ran Pulsar 1.0.0 and its pre-release builds, 2026-09-26 to 2026-09-30.
 
 ### Sampled answers vs Splash 1.1.0, 6 prompts
 
 Splash 1.1.0 was the latest Splash on 2026-09-30, the day of this test. Both servers ran at the same time, taking turns
-on each prompt, with other apps and servers closed. fastkernel is the released 1.0.0 package.
+on each prompt, with other apps and servers closed. Pulsar is the released 1.0.0 package.
 
 | Engine | tok/s | |
 |---|---:|---|
-| **fastkernel** | **123.2** | |
-| Splash 1.1.0 | 93.8 | fastkernel is **1.31× faster** (95% range 1.28–1.35×) |
+| **Pulsar** | **123.2** | |
+| Splash 1.1.0 | 93.8 | Pulsar is **1.31× faster** (95% range 1.28–1.35×) |
 
-| Task | fastkernel | Splash 1.1.0 | fastkernel is |
+| Task | Pulsar | Splash 1.1.0 | Pulsar is |
 |---|---:|---:|---:|
 | chat | 80.6 | 57.2 | 1.41× |
 | code | 158.8 | 116.8 | 1.36× |
@@ -295,9 +295,9 @@ few tokens.
 
 | Engine | tok/s | |
 |---|---:|---|
-| **fastkernel** | **123.5** | |
-| Splash 1.0.2 | 86.9 | fastkernel is **1.42× faster** |
-| MTPLX (4-bit + MTP) | 64.0 | fastkernel is **1.93× faster** |
+| **Pulsar** | **123.5** | |
+| Splash 1.0.2 | 86.9 | Pulsar is **1.42× faster** |
+| MTPLX (4-bit + MTP) | 64.0 | Pulsar is **1.93× faster** |
 
 Conditions: nothing else used the GPU during the run.
 
@@ -308,12 +308,12 @@ Conditions: nothing else used the GPU during the run.
 - Seeds 20261501 and 20261502. A seed fixes the random picks, so a run can be repeated.
 - The engines took turns on each prompt. The client (the program sending the prompts) timed each answer, and we
   averaged over all requests.
-- Builds: a fastkernel 1.0.0 pre-release build of 2026-09-27; Splash 1.0.2 as installed; MTPLX from a local install (Bare-Speed
+- Builds: a Pulsar 1.0.0 pre-release build of 2026-09-27; Splash 1.0.2 as installed; MTPLX from a local install (Bare-Speed
   4-bit + MTP). This run didn't record the thermal state or whether Chrome was open.
 
 Per prompt, in tok/s:
 
-| Prompt | fastkernel | Splash | MTPLX |
+| Prompt | Pulsar | Splash | MTPLX |
 |---|---:|---:|---:|
 | math | 163 | 122 | 79 |
 | code | 168 | 116 | 76 |
@@ -331,8 +331,8 @@ times on each engine. Speed here is prompt tokens read per second.
 
 | Engine | Prompt tok/s | |
 |---|---:|---|
-| **fastkernel** | **775** | |
-| MTPLX (4-bit + MTP) | 704 | fastkernel is **1.10× faster** |
+| **Pulsar** | **775** | |
+| MTPLX (4-bit + MTP) | 704 | Pulsar is **1.10× faster** |
 
 Conditions: a new prompt each time, so neither engine could reuse earlier work.
 
@@ -342,19 +342,19 @@ Conditions: a new prompt each time, so neither engine could reuse earlier work.
 - 16,693 prompt tokens. Each request carried a new random string (a nonce). So neither engine could reuse work saved
   from an earlier prompt (no prefix-cache hit).
 - Each answer was one token long. The engines took turns.
-- Seconds per request: fastkernel 22.37 / 21.60 / 20.69; MTPLX 24.82 / 23.65 / 22.67. The speeds above are the averages.
+- Seconds per request: Pulsar 22.37 / 21.60 / 20.69; MTPLX 24.82 / 23.65 / 22.67. The speeds above are the averages.
 
 </details>
 
 ### Greedy answers vs AX Engine, 5 prompts
 
-We sent 5 of the prompts, twice each, to fastkernel and to AX Engine 7.5.7. AX takes prompts of up to 16K tokens, so
+We sent 5 of the prompts, twice each, to Pulsar and to AX Engine 7.5.7. AX takes prompts of up to 16K tokens, so
 we left out the long agent task.
 
 | Engine | tok/s | |
 |---|---:|---|
-| **fastkernel** | **126.0** | |
-| AX Engine 7.5.7 (MXFP4 + MTP) | 40.5 | fastkernel is **3.11× faster** |
+| **Pulsar** | **126.0** | |
+| AX Engine 7.5.7 (MXFP4 + MTP) | 40.5 | Pulsar is **3.11× faster** |
 
 Conditions: nothing else used the GPU during the run.
 
@@ -365,13 +365,13 @@ Conditions: nothing else used the GPU during the run.
   4-bit number format.
 - AX flags: `--mlx-mtp-policy required --speculation-profile coding`. AX's own guessing was on, and it kept 92% of its
   guesses.
-- fastkernel: a 1.0.0 pre-release build of 2026-09-26. With the long agent task included, fastkernel's greedy average is 120.8.
+- Pulsar: a 1.0.0 pre-release build of 2026-09-26. With the long agent task included, Pulsar's greedy average is 120.8.
 - AX's answers are shorter and show no written-out reasoning. That changes how long an answer is, not how fast it is
   written.
 
 Per prompt, in tok/s:
 
-| Prompt | fastkernel | AX |
+| Prompt | Pulsar | AX |
 |---|---:|---:|
 | chat | 82.6 | 33.9 |
 | Portuguese | 93.3 | 25.7 |
@@ -387,8 +387,8 @@ The same 5 prompts, once each, with sampled answers.
 
 | Engine | tok/s | |
 |---|---:|---|
-| **fastkernel** | **115.0** | |
-| AX Engine 7.5.7 (MXFP4 + MTP) | 27.9 | fastkernel is **4.12× faster** |
+| **Pulsar** | **115.0** | |
+| AX Engine 7.5.7 (MXFP4 + MTP) | 27.9 | Pulsar is **4.12× faster** |
 
 Conditions: as in the greedy run above.
 
@@ -402,13 +402,13 @@ Conditions: as in the greedy run above.
 
 ### Sampled answers vs llama.cpp and MLX-LM, 6 prompts
 
-We ran fastkernel, llama.cpp and MLX-LM side by side. We sent the 6 prompts, twice each, to each engine in turn.
+We ran Pulsar, llama.cpp and MLX-LM side by side. We sent the 6 prompts, twice each, to each engine in turn.
 
 | Engine | tok/s | |
 |---|---:|---|
-| **fastkernel** | **116.8** | |
-| MLX-LM 0.31.3 | 31.2 | fastkernel is **3.74× faster** |
-| llama.cpp 0.5.0 | 27.0 | fastkernel is **4.33× faster** |
+| **Pulsar** | **116.8** | |
+| MLX-LM 0.31.3 | 31.2 | Pulsar is **3.74× faster** |
+| llama.cpp 0.5.0 | 27.0 | Pulsar is **4.33× faster** |
 
 Conditions: Chrome was open for part of the run, and the Mac was warm ("fair") for most requests.
 
@@ -417,7 +417,7 @@ Conditions: Chrome was open for part of the run, and the Mac was warm ("fair") f
 
 Setup:
 
-- MLX-LM ran `mlx-community/Qwen3.8-27B-4bit` (4-bit, group 64, 4.50 bits per weight). fastkernel's package was
+- MLX-LM ran `mlx-community/Qwen3.8-27B-4bit` (4-bit, group 64, 4.50 bits per weight). Pulsar's package was
   converted from these same weights.
 - llama.cpp ran `lmstudio-community/Qwen3.8-27B-GGUF` Q4_K_M (4.92 bits per weight). GGUF is llama.cpp's model file
   format, and Q4_K_M is one of its 4-bit types. Of the public Q4_K_M files, this one is closest to 4.5 bits; Qwen
@@ -430,15 +430,15 @@ Setup:
 
 Results:
 
-- 95% confidence intervals: fastkernel 116.8 [92.7, 142.8]; ratio vs llama.cpp 4.33 [3.46, 5.20], vs MLX-LM 3.74
+- 95% confidence intervals: Pulsar 116.8 [92.7, 142.8]; ratio vs llama.cpp 4.33 [3.46, 5.20], vs MLX-LM 3.74
   [3.01, 4.47].
 - Conditions: the Mac was cool ("nominal") for the first 4 requests, then warm ("fair") for 32 of 36. Chrome was open
   for 16 of 36 requests.
-- fastkernel: the 1.0.0 pre-release build of 2026-09-29, with the release settings.
+- Pulsar: the 1.0.0 pre-release build of 2026-09-29, with the release settings.
 
 Per prompt, in tok/s:
 
-| Prompt | fastkernel | MLX-LM | llama.cpp |
+| Prompt | Pulsar | MLX-LM | llama.cpp |
 |---|---:|---:|---:|
 | chat | 80 | 31 | 28 |
 | math | 161 | 33 | 28 |
@@ -455,8 +455,8 @@ We ran the first Splash test again with the same prompts. Then we repeated it wi
 
 | Engine | Sampled tok/s | Greedy tok/s | |
 |---|---:|---:|---|
-| **fastkernel** | **121.0** | **124.8** | |
-| Splash 1.0.2 | 86.6 | 90.3 | fastkernel is **1.40×** (sampled) and **1.38×** (greedy) **faster** |
+| **Pulsar** | **121.0** | **124.8** | |
+| Splash 1.0.2 | 86.6 | 90.3 | Pulsar is **1.40×** (sampled) and **1.38×** (greedy) **faster** |
 
 Conditions: Chrome was open, and the Mac ran warm ("fair" thermal state) for most requests.
 
@@ -465,7 +465,7 @@ Conditions: Chrome was open, and the Mac ran warm ("fair" thermal state) for mos
 
 95% confidence intervals (bootstrap over prompts):
 
-| Answers | fastkernel | Splash | Ratio |
+| Answers | Pulsar | Splash | Ratio |
 |---|---|---|---|
 | Sampled | 121.0 [95.1, 148.9] | 86.6 [67.3, 107.2] | 1.398 [1.343, 1.452] |
 | Greedy | 124.8 [98.3, 152.3] | 90.3 [72.2, 108.7] | 1.382 [1.316, 1.457] |
@@ -475,7 +475,7 @@ so its range is narrow.
 
 Per prompt, in tok/s:
 
-| Prompt | fastkernel sampled | Splash sampled | fastkernel greedy | Splash greedy |
+| Prompt | Pulsar sampled | Splash sampled | Pulsar greedy | Splash greedy |
 |---|---:|---:|---:|---:|
 | chat | 81 | 54 | 77 | 59 |
 | math | 171 | 122 | 166 | 122 |
@@ -484,12 +484,12 @@ Per prompt, in tok/s:
 | agent | 89 | 70 | 99 | 78 |
 | multilingual | 94 | 67 | 100 | 70 |
 
-- Builds: the fastkernel 1.0.0 pre-release build of 2026-09-29; Splash 1.0.2 as installed. Both servers
+- Builds: the Pulsar 1.0.0 pre-release build of 2026-09-29; Splash 1.0.2 as installed. Both servers
   ran in one session, and all 48 requests completed cleanly.
 - In all 12 sampled requests, Splash wrote the same number of tokens as in the first run. So it did the same work
   both times (86.6 vs 86.9 tok/s).
-- On two prompts, the greedy text differs from an older fastkernel build. There the text is byte-identical to
-  fastkernel's own reference path (1,533/1,533 positions), the path the model check below compares against.
+- On two prompts, the greedy text differs from an older Pulsar build. There the text is byte-identical to
+  Pulsar's own reference path (1,533/1,533 positions), the path the model check below compares against.
 
 </details>
 
@@ -500,8 +500,8 @@ model. It has many small expert blocks and uses only a few of them for each toke
 
 | Engine | Sampled tok/s | Greedy tok/s | |
 |---|---:|---:|---|
-| **fastkernel** | **271.5** | **271.2** | |
-| Splash 1.0.2 | 218.9 | 249.8 | fastkernel is **1.24×** (sampled) and **1.09×** (greedy) **faster** |
+| **Pulsar** | **271.5** | **271.2** | |
+| Splash 1.0.2 | 218.9 | 249.8 | Pulsar is **1.24×** (sampled) and **1.09×** (greedy) **faster** |
 
 Conditions: Chrome was open. The Mac was cool for 30 requests and warm ("fair") for 18.
 
@@ -509,21 +509,21 @@ Conditions: Chrome was open. The Mac was cool for 30 requests and warm ("fair") 
 <summary>Details</summary>
 
 - Model: `incoai/Qwen3.6-35B-A3B-Splash` (4-bit mixture of experts) with its DFlash 2 draft model.
-- fastkernel: the 1.0.0 pre-release build of 2026-09-29, with the release settings.
+- Pulsar: the 1.0.0 pre-release build of 2026-09-29, with the release settings.
 - In this build, the draft's one-launch K/V math (part 3 of [What's inside](WHATS-INSIDE.md)) covered the 27B's layer
   shapes. On this model it used the regular path, which is also exact. K/V are the keys and values the model stores
   for each earlier token.
 
 95% confidence intervals:
 
-| Answers | fastkernel | Splash | Ratio |
+| Answers | Pulsar | Splash | Ratio |
 |---|---|---|---|
 | Sampled | 271.5 [210.7, 334.9] | 218.9 [173.8, 266.0] | 1.240 [1.201, 1.286] |
 | Greedy | 271.2 [214.9, 328.7] | 249.8 [197.8, 301.5] | 1.086 [1.054, 1.118] |
 
 Per prompt, in tok/s:
 
-| Prompt | fastkernel sampled | Splash sampled | fastkernel greedy | Splash greedy |
+| Prompt | Pulsar sampled | Splash sampled | Pulsar greedy | Splash greedy |
 |---|---:|---:|---:|---:|
 | chat | 197 | 159 | 208 | 180 |
 | math | 367 | 275 | 348 | 317 |
@@ -538,11 +538,11 @@ Per prompt, in tok/s:
 
 ### 24 GB M5 Pro with a 69K context
 
-We let the GPU use 20 GB with `sudo sysctl iogpu.wired_limit_mb=20480` (it resets on reboot). We ran fastkernel
+We let the GPU use 20 GB with `sudo sysctl iogpu.wired_limit_mb=20480` (it resets on reboot). We ran Pulsar
 text-only (`SPLASH_TEXT_ONLY=1`), which skips the part of the model that reads images. We sent one greedy request per
 prompt.
 
-| Prompt | fastkernel tok/s |
+| Prompt | Pulsar tok/s |
 |---|---:|
 | math | **78.9** |
 | code | **73.3** |
@@ -578,9 +578,9 @@ Memory plan, default settings vs the GPU given 20 GB:
 
 ### 24 GB M5 Pro at default settings
 
-The same Mac with no memory setting changed. fastkernel runs text-only with an 8,185-token context.
+The same Mac with no memory setting changed. Pulsar runs text-only with an 8,185-token context.
 
-| Prompt | fastkernel tok/s |
+| Prompt | Pulsar tok/s |
 |---|---:|
 | math | **77.6** |
 | code | **72.0** |
@@ -594,8 +594,8 @@ Conditions: on power, with Chrome, Safari and ChatGPT quit. The Mac stayed cool 
 - Tool calls, end to end including the prompt: tool-copy 115.3 tok/s, tool-edit 75.5.
 - Exact on the real chip: 2,058/2,058 positions match with and without the multi-row checks. The M5 Pro also matched
   our M5 Max running as if it had 16 GPU cores, position for position.
-- Build: a fastkernel 1.0.0 pre-release build with the same memory plan. Its single-request paths match the release on 16 cores.
-- The small draft head didn't fit this memory plan, so fastkernel used the full one.
+- Build: a Pulsar 1.0.0 pre-release build with the same memory plan. Its single-request paths match the release on 16 cores.
+- The small draft head didn't fit this memory plan, so Pulsar used the full one.
 - A separate run with the Mac in normal use (Chrome open, CPU load up to 4.6): 56.6 tok/s sampled, 50.2 greedy.
 
 </details>
@@ -633,7 +633,7 @@ result with a reference path, and it takes 30 s on the GPU:
 
 ```bash
 make -j12 BUILD=build build/engine-tests/model-runtime-oracle
-build/engine-tests/model-runtime-oracle build/splash.metallib \
+build/engine-tests/model-runtime-oracle build/pulsar.metallib \
   "$HOME/Library/Application Support/Splash/models/incoai/Qwen3.8-27B-Splash"
 # last line: model_runtime_oracle_test: PASS
 ```

@@ -66,7 +66,7 @@ struct GdnPrefillBuffers final {
   metal::MetalBuffer hidden;
 };
 
-// SPLASH_GDN_DEFER (fastkernel): a B1 lane's recurrent commit deferred into
+// SPLASH_GDN_DEFER (Pulsar): a B1 lane's recurrent commit deferred into
 // its next value-parts scan. `rows` pending rows (the previous cycle's
 // retained rows: `mixed`, `decay` and `beta` are that cycle's lane slot of this
 // layer) replay from `base` (the lane's next cell) into its current cell
@@ -118,7 +118,7 @@ struct GdnCommitBuffers final {
   metal::MetalBuffer retainedCounts;
 };
 
-// Per-request scratch for fastkernel's wide lookup: one request's 16 (tiles =
+// Per-request scratch for Pulsar's wide lookup: one request's 16 (tiles =
 // 2) or 32 (tiles = 4, SPLASH_WIDE_LOOKUP32) rows as M8 tiles. Forward needs
 // one layer's convolution carry; commit needs every layer's; four tiles
 // alternate two carry slots. Packed GDN tensors hold the tiles in physical
@@ -147,12 +147,12 @@ public:
                          GdnHeadOrder order);
   // Also writes the out-projection's `input` table into
   // buffers.linearScratch when it is not Plain, and throws when the scratch
-  // cannot hold it. GroupSums (fastkernel's GDN_FUSED_SUMS) writes one lane's
+  // cannot hold it. GroupSums (Pulsar's GDN_FUSED_SUMS) writes one lane's
   // split-K group sums into linearScratch.sums, from the grouped VH48 variant
   // with bf16 norm weights only; SPLASH_GDN_VALUE_PARTS=4 (default) runs that
   // as four value parts per head and a finalize.
   // The layout the decode writes for the out-projection `plan` reads:
-  // GroupSums under fastkernel's SPLASH_GDN_FUSED_SUMS (default on) for the
+  // GroupSums under Pulsar's SPLASH_GDN_FUSED_SUMS (default on) for the
   // one-lane split-K tile where the group-sums variant applies, else
   // plan.input().
   [[nodiscard]] static LinearInput outputInput(const LinearPlan &plan, GdnShape shape, GdnHeadOrder order,
@@ -177,7 +177,7 @@ public:
   // current one.
   static void addFlush(metal::CommandGraph &graph, GdnFlushBuffers buffers, GdnShape shape,
                        uint32_t layers, uint32_t rows, uint32_t slot, GdnStateStrides state);
-  // fastkernel's wide lookup: one request's tiles x 8 rows (the grouped head
+  // Pulsar's wide lookup: one request's tiles x 8 rows (the grouped head
   // order and bf16 norm weights only). The scans write their recurrent rows
   // into the hidden rows, which the gate then rewrites in place.
   static void addDecode16(metal::CommandGraph &graph, GdnDecodeBuffers buffers,

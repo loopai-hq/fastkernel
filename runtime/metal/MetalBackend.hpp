@@ -371,7 +371,7 @@ public:
   // the command watchdog's timeout); throws if it failed.
   void awaitTrailing();
 
-  // fastkernel SPLASH_STREAMED_SUBMIT: commits `head` now as the first Metal
+  // Pulsar SPLASH_STREAMED_SUBMIT: commits `head` now as the first Metal
   // command buffer of the next submission, while the caller still builds the
   // rest. That submission must pass the same dispatches and event steps,
   // grown past the head, and encodes only the rest, ordered behind the head

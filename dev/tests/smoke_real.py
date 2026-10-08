@@ -157,7 +157,7 @@ class RealServer:
         raise SmokeFailure(f"server did not become ready\n{self.tail()}")
 
     def stop(self, timeout: float = 60) -> None:
-        """Stops the server with SIGINT, as Ctrl+C stops splash serve, and
+        """Stops the server with SIGINT, as Ctrl+C stops pulsar serve, and
         requires a clean exit within timeout."""
         self.process.send_signal(signal.SIGINT)
         try:
@@ -1612,7 +1612,7 @@ def run_persistent_cache(arguments) -> None:
 
 
 def add_server_arguments(parser):
-    parser.add_argument("--binary", type=Path, default=ROOT / "build/splash")
+    parser.add_argument("--binary", type=Path, default=ROOT / "build/pulsar")
     parser.add_argument(
         "--model-root",
         type=Path,
@@ -1637,7 +1637,7 @@ def resolve_server_arguments(arguments):
 
 
 def hold_model_root(arguments):
-    """As splash serve does, serve every server this process starts, and its
+    """As pulsar serve does, serve every server this process starts, and its
     tokenizer, from one assembly, which installations keep while it is held:
     point arguments.model_root at the assembly it links now, held until the
     process exits by arguments.held_record (None for a legacy package). The

@@ -238,7 +238,7 @@ struct QwenTargetVerifyBuffers final {
   std::array<metal::MetalBuffer, ExecutionLimits::maximumBatchWidth>
       pageTables;
   ops::MoeScratch moe;
-  // SPLASH_M24_PAD3 (fastkernel): four-lane views of hidden, normalized and
+  // SPLASH_M24_PAD3 (Pulsar): four-lane views of hidden, normalized and
   // the packed mixer inputs for a three-lane verify, whose input RMS and
   // input projections then cover the arena's idle fourth lane too; empty
   // when the caller cannot lend that lane.
@@ -246,7 +246,7 @@ struct QwenTargetVerifyBuffers final {
   metal::MetalBuffer normalizedPadded;
   metal::MetalBuffer fullPackedPadded;
   std::span<const metal::MetalBuffer> gdnPackedPadded;
-  // SPLASH_GDN_DEFER (fastkernel): a one-lane verify whose GDN layers defer
+  // SPLASH_GDN_DEFER (Pulsar): a one-lane verify whose GDN layers defer
   // the lane's recurrent commit (ops::GdnDeferScan): gdnPendingRows rows of
   // the previous cycle at gdnPending* (each layer's lane slot of them), read
   // from gdnDeferBase (the lane's next cell while rows are pending, else its
@@ -304,7 +304,7 @@ public:
       std::span<const SplashKvLayer> kvLayers,
       std::span<const kv::ChunkedPrefillParams> chunks,
       uint32_t lanes) const;
-  // fastkernel wide prompt lookup: one request's 16 or 32 rows as `tiles`
+  // Pulsar wide prompt lookup: one request's 16 or 32 rows as `tiles`
   // aliased lanes (2 or 4) of a dense target, whose GDN layers run the wide
   // decode over the private convolution carry along `gdnRoute`.
   void addVerify16(
@@ -326,7 +326,7 @@ public:
                     metal::MetalBuffer hidden, uint32_t rows) const;
   void addStateCommit(metal::CommandGraph &graph,
                       QwenTargetCommitBuffers buffers, uint32_t lanes) const;
-  // SPLASH_GDN_DEFER (fastkernel): whether a one-lane verify can defer its
+  // SPLASH_GDN_DEFER (Pulsar): whether a one-lane verify can defer its
   // GDN commit (its GDN layers take the value-parts route); a deferred
   // cycle's commit (the convolution carry only); and a pending recurrent
   // commit that no deferred scan takes (ops::GDN::addFlush).
@@ -337,7 +337,7 @@ public:
   // A wide lookup's GDN commit: retainedCounts[0] holds its total.
   void addStateCommit16(metal::CommandGraph &graph, QwenTargetCommitBuffers buffers,
                         metal::MetalBuffer convolutionScratch, uint32_t tiles) const;
-  // fastkernel wide prompt lookup: the widest single-request verify (8, 16 or
+  // Pulsar wide prompt lookup: the widest single-request verify (8, 16 or
   // 32 rows, as 1, 2 or 4 lanes of one request) whose rows keep every Q4
   // projection's 8-row K reduction on this device, so a wide lookup changes
   // no row's bytes. A sparse-MoE target has no wide verify (8).

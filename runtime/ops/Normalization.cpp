@@ -17,7 +17,7 @@ namespace {
 // is), with the 1024-thread dispatch every supported GPU family admits.
 // SPLASH_STAGED_NORM_WIDE (default on), read per process: plain bf16 norms
 // wider than upstream's staged region run norm_rms_staged_wide, the same
-// bits as norm_rms (fastkernel 1.0.0, M5 Max 40 vs 1.0.x's norm_rms: norm
+// bits as norm_rms (Pulsar 1.0.0, M5 Max 40 vs 1.0.x's norm_rms: norm
 // 1.80 -> 0.69 ms per B1 cycle at 5K; upstream's 1.3.0 norm_rms is faster
 // itself, so this is to be re-measured).
 bool stagedWide(const NormWeights &weight, uint32_t width) noexcept {
@@ -41,7 +41,7 @@ PreparedInput Normalization::addRms(metal::CommandGraph &graph,
   const uint64_t bytes = uint64_t{rows} * width * 2;
   requireBytes(input, bytes, "norm input");
   requireBytes(output, bytes, "norm output");
-  // fastkernel's fused input sums: the outputs and each row's sums per
+  // Pulsar's fused input sums: the outputs and each row's sums per
   // 64-input group, which the consumer otherwise computes itself.
   if (layout == LinearInput::GroupSums) {
     if (!weight.float32 && width <= SPLASH_STAGED_NORM_WIDE_WIDTH && width % 64 == 0 &&

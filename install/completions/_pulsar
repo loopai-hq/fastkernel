@@ -1,9 +1,9 @@
-#compdef splash
+#compdef pulsar
 
 # Keep the stable install path so an already-running shell survives upgrades.
 typeset -g _splash_completion_source=${${(%):-%x}:a}
 
-_splash() {
+_pulsar() {
     local word helper
     local -a models
     if (( CURRENT == 2 )); then
@@ -29,7 +29,7 @@ _splash() {
 }
 
 if [[ $zsh_eval_context[-1] == loadautofunc ]]; then
-    _splash "$@"
+    _pulsar "$@"
 elif (( $+functions[compdef] )); then
-    compdef _splash splash
+    compdef _pulsar splash
 fi

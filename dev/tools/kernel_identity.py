@@ -2,8 +2,8 @@
 """Compare the AIR of kernels in two Metal libraries.
 
 Run as ``python dev/tools/kernel_identity.py BASELINE CANDIDATE [--match
-PATTERN ...]``, each a metallib or a directory whose splash.metallib or
-build/splash.metallib it compares. metal-objdump disassembles each function of
+PATTERN ...]``, each a metallib or a directory whose pulsar.metallib or
+build/pulsar.metallib it compares. metal-objdump disassembles each function of
 a library as an LLVM module of its own, which holds no source path or build
 id. Two functions are identical when their modules' text is, but for the
 module's offset in its library, which the disassembly prints before it.
@@ -34,14 +34,14 @@ HEADER = re.compile(r"^0x[0-9a-f]+ -- (.+):$", re.MULTILINE)
 
 
 def library(path: Path) -> Path:
-    """The metallib a path names: itself, or the splash.metallib of a build
+    """The metallib a path names: itself, or the pulsar.metallib of a build
     directory or of a checkout's build/."""
     if path.is_file():
         return path
-    for metallib in (path / "splash.metallib", path / "build/splash.metallib"):
+    for metallib in (path / "pulsar.metallib", path / "build/pulsar.metallib"):
         if metallib.is_file():
             return metallib
-    raise FileNotFoundError(f"no splash.metallib in {path}")
+    raise FileNotFoundError(f"no pulsar.metallib in {path}")
 
 
 def functions(metallib: Path) -> dict[str, str]:

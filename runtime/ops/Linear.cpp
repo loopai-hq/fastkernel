@@ -529,13 +529,13 @@ constexpr uint32_t kPaired256WaveGroupsPerCore = 4;
 // N128 tile on 12-, 20- and 40-core GPUs; below two it loses on 40 cores.
 constexpr uint32_t kPaired256OneWaveTilesPerCore = 2;
 
-// fastkernel's one-lane split-K rule (SPLASH_ONE_LANE_SPLIT, default on): at
+// Pulsar's one-lane split-K rule (SPLASH_ONE_LANE_SPLIT, default on): at
 // most one N128 tile per core over a long K leaves the GPU idle; tune-kernels
 // on M5 Max 40 measured Split32 at 4 groups/core +34% (K 17408/25600) and
 // +38..42% (K 4096/6144) GPU per projection. SPLASH_NARROW_SPLIT (default on)
 // lowers its bound from N >= 4096 to N >= 256, the drafter's narrow outputs
 // (serving ms/step -1.24%). Reassociates K sums against the sequential tile;
-// fastkernel 1.0.0 checked its outputs against the model's quality gates.
+// Pulsar 1.0.0 checked its outputs against the model's quality gates.
 std::optional<LinearConfig> oneLaneSplitConfig(LinearWorkload w, uint32_t cores) {
   static const bool oneLaneSplit = metal::envSwitch("SPLASH_ONE_LANE_SPLIT");
   static const bool narrowSplit = metal::envSwitch("SPLASH_NARROW_SPLIT");
@@ -583,7 +583,7 @@ Linear::Linear(const DeviceCapabilities &device) noexcept
 // both default on: multi-lane projections with at most one N128 tile per core
 // over a long K take the one-lane split-K rule too (four K partitions of two
 // simdgroups, precomputed sums, 256 threads). Two-request cycles -2.9%; 3-4
-// request cycles -20% (fastkernel 1.0.0). Reassociates K sums, as the one-lane
+// request cycles -20% (Pulsar 1.0.0). Reassociates K sums, as the one-lane
 // rule does. Affine projections only: block (GGUF) projections keep upstream's
 // tiles.
 bool Linear::narrowSplitShape(LinearWorkload w) const noexcept {
@@ -688,7 +688,7 @@ LinearInput Linear::normInput(const LinearPlan &plan) const {
   // SPLASH_INPUT_FUSED_SUMS (default on): the input RMS also writes the
   // projection's group sums, and the projection runs as the split-K kernel
   // that reads them (addPreparedSums; reassociates K). Serving ms/step -2.1%
-  // on fastkernel 1.0.0, which checked its outputs against the model's
+  // on Pulsar 1.0.0, which checked its outputs against the model's
   // quality gates. SPLASH_M16_INPUT_SUMS and
   // SPLASH_M24_INPUT_SUMS (default on) extend it to 16- and 24/32-row
   // verifies whose N128 (or M24/M32 N256) projections become the split-K
@@ -713,7 +713,7 @@ LinearInput Linear::normInput(const LinearPlan &plan) const {
 
 bool Linear::gateUpWritesDownSums(const LinearPlan &gateUp, const LinearPlan &down) const {
   // SPLASH_FFN_FUSED_SUMS (default on): the one-lane gate/up kernel writes
-  // the down projection's sums; byte-exact outputs and sums, fastkernel 1.0.0
+  // the down projection's sums; byte-exact outputs and sums, Pulsar 1.0.0
   // oracle PASS. SPLASH_M16_FFN_SUMS (default on; read at every call so one
   // binary serves both arms of an A/B): the same at two lanes, B2 lockstep
   // -0.117 ms/cycle.
@@ -882,7 +882,7 @@ PreparedInput Linear::add(metal::CommandGraph &graph, LinearBuffers b,
   if (w.epilogue == LinearEpilogue::GateUp) {
     const AffineWeights &g = gate->affine();
     if (!prefill && b.downSums) {
-      // fastkernel's fused FFN sums (gateUpWritesDownSums): the N256 gate/up
+      // Pulsar's fused FFN sums (gateUpWritesDownSums): the N256 gate/up
       // tile also writes the down projection's input sums into the scratch.
       const bool m16 = selected.pipeline() == "decode_linear_q4_n256_gate_up_m16";
       if ((selected.pipeline() != "decode_linear_q4_n256_gate_up" && !m16) || !b.downSums.sameView(b.scratch.sums))
@@ -922,7 +922,7 @@ PreparedInput Linear::add(metal::CommandGraph &graph, LinearBuffers b,
   return b.prepared;
 }
 
-// fastkernel's fused input sums (normInput): the input's producer wrote its
+// Pulsar's fused input sums (normInput): the input's producer wrote its
 // group sums, so a plain projection planned as the full-K Paired128 (8 rows),
 // N128 (16) or N128/N256 (24, 32 rows) tile runs the split-K tile over its N/32
 // tiles instead, reading them. A full-K paired consumer without its own sum
@@ -949,7 +949,7 @@ void Linear::addPreparedSums(metal::CommandGraph &graph, const LinearBuffers &b,
   // overflow a resident wave (more than kSplit4InputWaveGroupsPerCore per
   // core) runs as N/32/d groups of d tiles each. Exact: the same tile body,
   // which strides over its tiles by the group count. B1 lockstep -0.203
-  // ms/step (fastkernel 1.0.0, M5 Max 40); below one wave it changes nothing.
+  // ms/step (Pulsar 1.0.0, M5 Max 40); below one wave it changes nothing.
   if (!multi) {
     const char *value = std::getenv("SPLASH_SPLIT4_INPUT_DIV");
     const uint32_t d = !value || std::string_view(value) == "1"

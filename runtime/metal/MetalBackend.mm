@@ -337,7 +337,7 @@ struct BackendAsyncState {
         return activeSequence;
     }
 
-    // `leading` excludes buffers already committed (fastkernel streamed heads).
+    // `leading` excludes buffers already committed (Pulsar streamed heads).
     void commitSubmission(uint64_t sequence,
                           std::span<const id<MTLCommandBuffer>> leading,
                           id<MTLCommandBuffer> command,
@@ -449,7 +449,7 @@ struct CommandTicket::State {
         }
         timing.wallSeconds =
             std::chrono::duration<double>(wallEnd - wallStart).count();
-        // fastkernel diagnostic, default off: SPLASH_GPU_GAP_LOG=1 prints each
+        // Pulsar diagnostic, default off: SPLASH_GPU_GAP_LOG=1 prints each
         // command's GPU span, from its first buffer's start to its last
         // buffer's end; the GPU idles between one line's end and the next's
         // start.
@@ -762,14 +762,14 @@ struct MetalBackend::Impl {
             command.dispatches.push_back(item);
         }
 
-        // fastkernel, exact scheduling, read at every submission so one
+        // Pulsar, exact scheduling, read at every submission so one
         // binary serves both arms of an in-process A/B: the two M8 N32
         // split-K entries run as their twins. SPLASH_SPLIT4_FOOTER (default
         // on, _ftr) skips each threadgroup's last-tile scratch-reuse barrier
         // (lockstep -0.154 ms/step); SPLASH_SPLIT4_HOIST (default on, _hoist)
         // issues each matmul pair's metadata loads first, with the stock FMA
         // order (lockstep -0.312 ms/step). Byte identity was shown with this
-        // Mac's GPU compiler (fastkernel 1.0.0); re-check per chip.
+        // Mac's GPU compiler (Pulsar 1.0.0); re-check per chip.
         const bool footer = envSwitch("SPLASH_SPLIT4_FOOTER");
         const bool hoist = envSwitch("SPLASH_SPLIT4_HOIST");
         const std::string_view split4Suffix = hoist ? (footer ? "_hoist_ftr" : "_hoist") : "_ftr";
@@ -807,7 +807,7 @@ struct MetalBackend::Impl {
         return command;
     }
 
-    // fastkernel SPLASH_STREAMED_SUBMIT / SPLASH_CHUNKED_SUBMIT: the first
+    // Pulsar SPLASH_STREAMED_SUBMIT / SPLASH_CHUNKED_SUBMIT: the first
     // Metal command buffer of the next command, committed before the rest
     // was encoded (streamHead). Its ticket is the command's; the rest waits
     // for it through headFence.
@@ -1486,7 +1486,7 @@ CommandTicket MetalBackend::submitCommandAsync(const Command &command,
 #endif
     checkEvents(command.events, command.dispatches.size());
     std::optional<Impl::StreamedHead> head = std::exchange(impl_->streamed, std::nullopt);
-    // fastkernel SPLASH_CHUNKED_SUBMIT=N (default 48, 0 = off, read per
+    // Pulsar SPLASH_CHUNKED_SUBMIT=N (default 48, 0 = off, read per
     // submission): a command without event steps and of more than 2N
     // dispatches commits its first N as a head before the rest is encoded,
     // so the GPU starts sooner. Scheduling only.

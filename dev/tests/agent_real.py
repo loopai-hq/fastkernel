@@ -67,7 +67,7 @@ def current_build_id():
             argparse.Namespace(
                 header=directory / "BuildIdentity.hpp",
                 stamp=stamp,
-                binary=[ROOT / "build/splash"],
+                binary=[ROOT / "build/pulsar"],
             ),
             identity,
         )
@@ -1059,7 +1059,7 @@ def parse_args(argv=None):
         type=serve_options.parse_model_id,
         required=True,
     )
-    # The installation's source options, which splash serve is given, and
+    # The installation's source options, which pulsar serve is given, and
     # its selection link (install/models.py link), which they name by default.
     parser.add_argument("--revision")
     parser.add_argument(
@@ -1141,7 +1141,7 @@ def main(argv=None):
         identity = current_build_id()
         if launcher._request_json("/status") is None:
             command = [
-                str(ROOT / "splash"),
+                str(ROOT / "pulsar"),
                 "serve",
                 "--max-context",
                 args.max_context,

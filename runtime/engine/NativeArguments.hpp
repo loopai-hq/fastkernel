@@ -38,7 +38,7 @@ struct NativeArguments final {
   // automatically while it holds a request.
   bool preventIdleSleep = true;
   // --ane on|off: whether a dense target's prefill FFN may split with the
-  // Neural Engine when that is faster (splash serve --disable-ane turns it
+  // Neural Engine when that is faster (pulsar serve --disable-ane turns it
   // off).
   bool neuralEngine = true;
 };

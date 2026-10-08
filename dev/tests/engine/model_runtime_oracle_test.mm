@@ -1406,7 +1406,7 @@ void warmupEos(model::RuntimeContext context, model::LoadedModel &model) {
             << " decode_stop=" << decodeStop << '\n';
 }
 
-// fastkernel prompt lookup under a token mask, at the default
+// Pulsar prompt lookup under a token mask, at the default
 // SPLASH_GRAMMAR_CHAIN and SPLASH_STREAMED_SUBMIT (one chained command whose
 // head streams first): a constrained request whose prompt repeats verifies
 // the lookup's tokens over 8, 16 or 32 rows as the switches and the target's
@@ -1765,7 +1765,7 @@ int main(int argc, char **argv) {
     // The runtime builds every policy kernel when it is constructed: after
     // a greedy first token and verify, a sampled, penalized request's
     // compile nothing more.
-    // fastkernel's wide prompt lookup may verify request 1's repeated
+    // Pulsar's wide prompt lookup may verify request 1's repeated
     // prompt as one 16-row lookup, which leaves the ordinary 8-row verify
     // kernels to request 2's first cycle; then only the policy kernels
     // (decode_sample_*) must already exist.

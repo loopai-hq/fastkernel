@@ -1,5 +1,5 @@
 # Modified by meowkernels.
-"""The options `splash serve` and the server share: each flag's check, help
+"""The options `pulsar serve` and the server share: each flag's check, help
 and default, and how the launcher passes a value on to the server.
 
 Standard library only, with the server modules that are too: the launcher
@@ -268,7 +268,7 @@ def parse_reasoning_effort(value):
     return value
 
 
-# The help's option groups, in the order `splash serve --help` lists them:
+# The help's option groups, in the order `pulsar serve --help` lists them:
 # each group's key and title. The launcher's own model options and --port
 # join "model" and "network".
 GROUPS = (

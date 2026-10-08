@@ -183,7 +183,7 @@ engine::RuntimeBootstrapConfig
 bootstrapConfig(const engine::NativeArguments &arguments) {
   engine::RuntimeBootstrapConfig config;
   config.resources.metallibPath =
-      executablePath().parent_path() / "splash.metallib";
+      executablePath().parent_path() / "pulsar.metallib";
   config.resources.modelRoot = arguments.modelRoot;
   config.resources.model = arguments.model;
   config.resources.buildId = SPLASH_BUILD_ID;
@@ -199,7 +199,7 @@ bootstrapConfig(const engine::NativeArguments &arguments) {
       arguments.neuralEngine && metal::envSwitch("SPLASH_ANE");
   config.nativeLoop.engine.maxContext = arguments.maxContext;
   // SPLASH_KEEP_PREFILL_CHECKPOINTS (default on): keep the 4096-token prefill
-  // checkpoints as reclaimable prefix states. On fastkernel 1.0.0, a subagent
+  // checkpoints as reclaimable prefix states. On Pulsar 1.0.0, a subagent
   // sharing an 11K prefix: TTFT 13.3 -> 4.4 s, outputs identical.
   config.nativeLoop.engine.keepPrefillCheckpoints =
       metal::envSwitch("SPLASH_KEEP_PREFILL_CHECKPOINTS");

@@ -92,7 +92,7 @@ void Sampling::countPenaltyTokens(std::span<uint32_t> words,
 }
 
 // SPLASH_BLOCK_VERIFY (default on; =0 is upstream's token rule). +1.29%
-// tokens per cycle in fastkernel 1.0.0, exact against a serial reference on
+// tokens per cycle in Pulsar 1.0.0, exact against a serial reference on
 // 22,848 real draws there.
 Sampling::Sampling(uint32_t vocabulary)
     : vocabulary_(vocabulary), maskWords_((vocabulary + 31) / 32),

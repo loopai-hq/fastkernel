@@ -194,9 +194,9 @@ struct QwenTarget::VerifyStep {
   // SPLASH_SPLIT4_M16 (default on; read at every encode so one binary serves
   // both arms of an A/B): a two-request (B2) verify's 16-row split-K residual
   // bodies (mixer out, FFN down) take the M8 footer and metadata hoist. B2
-  // lockstep -0.216 ms per cycle; byte-identical (fastkernel 1.0.0).
+  // lockstep -0.216 ms per cycle; byte-identical (Pulsar 1.0.0).
   bool m16HoistFooter = false;
-  // fastkernel wide prompt lookup (addVerify16): one request's aliased lanes.
+  // Pulsar wide prompt lookup (addVerify16): one request's aliased lanes.
   // Its GDN layers run the wide decode; like 1.0.0 it keeps the plain residual
   // bodies and the separate down-projection sums (both byte-identical).
   bool wide = false;
@@ -448,7 +448,7 @@ void QwenTarget::addMixerInput(VerifyStep &step, const ops::NormWeights &norm, m
   // SPLASH_M24_PAD3 (default on; read at every encode): a three-lane
   // verify whose input projection takes the RMS's group sums (normInput)
   // runs the RMS and the projection over the idle fourth lane too, as the
-  // split-K M32 consumer, cheaper than M24 (fastkernel 1.0.0: B3 -4.58 ms per
+  // split-K M32 consumer, cheaper than M24 (Pulsar 1.0.0: B3 -4.58 ms per
   // cycle). Exact per row: the split-K tile's rows don't depend on the rows
   // beside them; the fourth lane's rows are discarded.
   const bool pad3 = step.lanes == 3 && packedPadded && b.normalizedPadded &&

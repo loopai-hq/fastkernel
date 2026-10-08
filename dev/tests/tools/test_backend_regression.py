@@ -317,7 +317,7 @@ class BackendRegressionTests(unittest.TestCase):
         honours_share is false, and logs what it was given."""
         checkout = root / name
         (checkout / "build/engine-tests").mkdir(parents=True)
-        (checkout / "build/splash.metallib").write_text("")
+        (checkout / "build/pulsar.metallib").write_text("")
         if digest:
             tool = checkout / "build" / weights.WEIGHT_DIGESTS
             image = {"component": "target/layer-0.bin", "bytes": 1, "sha256": digest}

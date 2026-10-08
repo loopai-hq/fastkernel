@@ -44,7 +44,7 @@ esac
 # make install builds the engine first, as the installer checks a model's
 # configuration with it; no installer runs under the fake interpreter, so
 # these tests take the engine as built.
-ENGINE_BUILT = ("-o", "build/splash")
+ENGINE_BUILT = ("-o", "build/pulsar")
 
 
 # What a calling make or shell exports that would configure the make tested.
@@ -158,7 +158,7 @@ class MakefileTests(unittest.TestCase):
         self.assertIn("LANGUAGE_ONLY is 1 (text only) or 0", result.stderr)
 
     def test_the_model_installs_without_the_environments_lock(self):
-        # Another setup of the environment, such as splash serve's, need not
+        # Another setup of the environment, such as pulsar serve's, need not
         # wait for the download.
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)

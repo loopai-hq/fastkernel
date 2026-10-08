@@ -1,7 +1,7 @@
 // Prism ML's input rotation (kernels/shared/gguf_rotation.metal): gguf_rotate's H (D x) and the rotated PQ2_0
 // token gather's D (H r) are bitwise the bf16 rounding of the fp32 butterflies in source order, which lie within
 // one bf16 step of the fp64 transform.
-//   gguf-rotation <splash.metallib>
+//   gguf-rotation <pulsar.metallib>
 #include "GgufFormatReference.hpp"
 #include "TestBuffers.hpp"
 #include "metal/CommandGraph.hpp"
@@ -84,7 +84,7 @@ int check(const char *what, const uint16_t *got, const std::vector<float> &fp32,
 int main(int argc, char **argv) {
   @autoreleasepool {
     if (argc != 2) {
-      std::cerr << "usage: gguf-rotation <splash.metallib>\n";
+      std::cerr << "usage: gguf-rotation <pulsar.metallib>\n";
       return 2;
     }
     std::mt19937 rng(7);

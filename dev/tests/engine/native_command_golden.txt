@@ -1,5 +1,5 @@
 # serve-native command lines both sides must agree on, as
-# "<name> | <splash serve options> | <arguments after MODEL_DIRECTORY>" lines.
+# "<name> | <pulsar serve options> | <arguments after MODEL_DIRECTORY>" lines.
 #
 # server/server.py's _native_command writes the arguments for the options
 # (dev/tests/server/test_serve_options.py checks it), and

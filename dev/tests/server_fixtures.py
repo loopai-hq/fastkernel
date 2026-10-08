@@ -785,7 +785,7 @@ def main_args(**overrides):
             "no_webui": False,
             "max_request_size": serve_options.DEFAULT_MAX_REQUEST_BYTES,
             "port": 0,
-            "binary": "splash",
+            "binary": "pulsar",
             "kv_format": "int8",
             **overrides,
         }

@@ -32,7 +32,7 @@ class Normalization final {
 public:
   // Also writes the consumer's `layout` table into `scratch` when it is not
   // Plain, and throws when `scratch` cannot hold it; returns what the
-  // scratch then describes. GroupSums (fastkernel's fused input sums) is
+  // scratch then describes. GroupSums (Pulsar's fused input sums) is
   // written only for bf16 weights of rows up to the staged wide width in
   // whole 64-input groups; other norms leave the sums to the consumer.
   static PreparedInput addRms(metal::CommandGraph &graph, metal::MetalBuffer input,

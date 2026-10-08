@@ -16,7 +16,7 @@ import urllib.request
 from pathlib import Path
 
 if __name__ == "__main__" and not __package__:
-    # Run as a script by the PATH wrappers and ./splash: import siblings as
+    # Run as a script by the PATH wrappers and ./pulsar: import siblings as
     # the install package.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     __package__ = "install"
@@ -30,7 +30,7 @@ from . import models as model_artifacts
 
 ROOT = paths.ROOT
 RUNTIME_DIR = paths.RUNTIME
-# Either stops `splash serve` wherever it is. The programs with handlers of
+# Either stops `pulsar serve` wherever it is. The programs with handlers of
 # their own, the installer it runs and the server it executes, start with
 # them blocked, not ignored, until those handlers are in place, so one sent
 # meanwhile waits for its handler instead of being lost or ending the
@@ -284,7 +284,7 @@ def coding_client(args):
     if listing is None:
         message = (
             f"No ready Splash server at {_base_url(args.port)}. "
-            "Run 'splash serve --model <HF_REPO_ID>' in another terminal first."
+            "Run 'pulsar serve --model <HF_REPO_ID>' in another terminal first."
         )
         # OpenCode and Hermes have a --port of their own, which goes after --.
         if args.explicit_port:
@@ -363,18 +363,18 @@ def parse_args(argv=None):
         boundary = argv.index("--")
         argv, client_args = argv[:boundary], argv[boundary + 1 :]
     parser = argparse.ArgumentParser(
-        prog="splash",
+        prog="pulsar",
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Quick start:\n"
-            "  splash serve --model unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M\n"
-            "  splash opencode  # in another terminal, after Ready\n\n"
-            "Use splash serve --help for server settings. An agent command takes\n"
+            "  pulsar serve --model unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M\n"
+            "  pulsar opencode  # in another terminal, after Ready\n\n"
+            "Use pulsar serve --help for server settings. An agent command takes\n"
             "--port PORT for a server on another port and passes every other\n"
             "argument, including --help, to the installed agent. To pass the\n"
             "agent's own --port, start its arguments with --:\n"
-            "  splash opencode --port 8001 -- --port 4096"
+            "  pulsar opencode --port 8001 -- --port 4096"
         ),
     )
     parser.add_argument("--version", action="version", version=_version())
@@ -386,8 +386,8 @@ def parse_args(argv=None):
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  splash serve --model unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M\n"
-            "  splash serve --model unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M --max-context 128K\n\n"
+            "  pulsar serve --model unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M\n"
+            "  pulsar serve --model unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M --max-context 128K\n\n"
             "SIZE is bytes, or a number with K, M or G (1024-based), such as 28G.\n"
             "DURATION is seconds, or a number with s, m or h, such as 30m.\n\n"
             "After Ready, open http://127.0.0.1:PORT in a browser on this Mac, or\n"

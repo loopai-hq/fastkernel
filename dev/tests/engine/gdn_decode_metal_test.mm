@@ -124,7 +124,7 @@ struct Cell final {
 };
 
 // The mixer norm is bf16, or F32 as a GGUF stores it. A wide fixture
-// (fastkernel's wide lookup) is one request whose wideTiles x 8 rows fill
+// (Pulsar's wide lookup) is one request whose wideTiles x 8 rows fill
 // physical lanes 0..wideTiles-1: lane 0's rows, token 0..rows-1.
 struct Fixture final {
   const GdnShape &shape;
@@ -954,7 +954,7 @@ void gateMatchesPrefill(MetalBackend &backend, const GdnShape &shape, bool float
   }
 }
 
-// fastkernel: the bytes of one decoded lane-0 layer the commit and the next
+// Pulsar: the bytes of one decoded lane-0 layer the commit and the next
 // layer read: hidden rows, state cell, k/v columns of the mixed rows (1.3.0's
 // M8 verify writes no q columns) and gates, for `rows` rows.
 struct DecodedBytes final {
@@ -991,7 +991,7 @@ void requireSame(const DecodedBytes &got, const DecodedBytes &expected, const st
   require(got.decay == expected.decay && got.beta == expected.beta, what + ": gates differ");
 }
 
-// fastkernel's GDN_FUSED_SUMS byte gate: the GroupSums decode (four value
+// Pulsar's GDN_FUSED_SUMS byte gate: the GroupSums decode (four value
 // parts and a finalize under SPLASH_GDN_VALUE_PARTS=4, the default, else
 // verify_gdn_fused_split_sums) writes the stock decode's bytes, and the
 // sums of decode_linear_q4_split_sums over its hidden rows, without touching
@@ -1473,7 +1473,7 @@ int main(int argc, char **argv) {
       for (const GdnShape &shape : kShapes)
         for (GdnHeadOrder order : {GdnHeadOrder::Grouped, GdnHeadOrder::Tiled})
           gateMatchesPrefill(backend, shape, float32, order);
-    // fastkernel's GDN routes: the group sums (parts vs stock) and the wide
+    // Pulsar's GDN routes: the group sums (parts vs stock) and the wide
     // lookup (wide vs chained M8), with their buffer extents.
     rejectsInvalidFork(backend);
     groupSums(backend);

@@ -32,7 +32,7 @@ public:
   CommandGraph(CommandGraph &&) noexcept = default;
   CommandGraph &operator=(CommandGraph &&) noexcept = default;
 
-  // fastkernel SPLASH_STREAMED_SUBMIT: calls `sink` once with the first
+  // Pulsar SPLASH_STREAMED_SUBMIT: calls `sink` once with the first
   // `count` dispatches and the event steps among them, as soon as they are
   // complete (when the next dispatch starts), so that part can commit while
   // the rest is built. 0 clears it.

@@ -101,7 +101,7 @@ PAGED_VERIFY_SPLIT(verify_attention_q8_split_kv2_g8, 2, 8, int8_t, false)
 // BF16 shares the page loop and reduction, without quantization scales.
 PAGED_VERIFY_SPLIT(verify_attention_bf16_split, 4, 6, bfloat, false)
 PAGED_VERIFY_SPLIT(verify_attention_bf16_split_kv2_g8, 2, 8, bfloat, false)
-// fastkernel's striped twins (SPLASH_STRIPED_VERIFY): absolute-page stripes.
+// Pulsar's striped twins (SPLASH_STRIPED_VERIFY): absolute-page stripes.
 PAGED_VERIFY_SPLIT(verify_attention_q8_split_striped, 4, 6, int8_t, true)
 PAGED_VERIFY_SPLIT(verify_attention_q8_split_kv2_g8_striped, 2, 8, int8_t, true)
 PAGED_VERIFY_SPLIT(verify_attention_bf16_split_striped, 4, 6, bfloat, true)

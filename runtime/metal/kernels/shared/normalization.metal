@@ -224,7 +224,7 @@ NORM_RMS_TABLE(norm_rms_table16_decode, gguf_sg::Table16, bfloat)
 NORM_RMS_TABLE(norm_rms_table16_decode_f32, gguf_sg::Table16, float)
 #undef NORM_RMS_TABLE
 
-// SPLASH_STAGED_NORM_WIDE (default on; fastkernel's early copy of upstream PR #113, 2026-09-25): rows wider than
+// SPLASH_STAGED_NORM_WIDE (default on; Pulsar's early copy of upstream PR #113, 2026-09-25): rows wider than
 // upstream's staged region (above) up to SPLASH_STAGED_NORM_WIDE_WIDTH, any row count, e.g. the 27B's 5120-wide
 // norms. Measured on M5 Max 40 against 1.0.x's norm_rms: norm 1.80 -> 0.69 ms per B1 cycle at 5K, decode -1.8%.
 // Off (=0): upstream's rule, norm_rms. One threadgroup per row stages the row in threadgroup memory so the apply

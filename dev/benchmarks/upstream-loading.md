@@ -57,13 +57,13 @@ which prints `package_exact=true` and the decay's `decay_max_ulp` per file. The
 GGUF repack check is `gguf-preparation` in `make test-engine-metal`.
 
 ```sh
-build/engine-tests/affine-source-oracle build/splash.metallib \
+build/engine-tests/affine-source-oracle build/pulsar.metallib \
   install/models/mlx-community/Qwen3.6-35B-A3B-4bit/target install/models/incoai/Qwen3.6-35B-A3B-Splash
 ```
 
 `weight-digests` prints the size and SHA-256 of every image a model loads,
 `vision/model.bin` among them:
-`build/engine-tests/weight-digests build/splash.metallib MODEL_ROOT`.
+`build/engine-tests/weight-digests build/pulsar.metallib MODEL_ROOT`.
 
 The vision fixture embedding is unchanged, with Metal shader validation:
 `7946f077435ef45d0a596461a9d9a234ff458c805c007bb3ea1af7296bd230f9` for 35B on
@@ -134,7 +134,7 @@ baseline/candidate/candidate/baseline; ratios are baseline median GPU time over
 candidate median GPU time, so 1.000 is unchanged.
 
 ```sh
-build/engine-tests/backend-benchmark build/splash.metallib MODEL_ROOT \
+build/engine-tests/backend-benchmark build/pulsar.metallib MODEL_ROOT \
   --scenario decode --samples 3
 ```
 
@@ -158,7 +158,7 @@ gave 683.9 ms baseline and 683.5 ms candidate; the probe, derived from
 
 ## End to end
 
-`splash serve` installs of all four upstream models on the M5 Pro 16, with the
+`pulsar serve` installs of all four upstream models on the M5 Pro 16, with the
 draft fetched from the shared draft repository, produce the same answers as the
 released packages for two text and two image prompts (greedy decoding, same
 binary), and their prepared vision files match the hashes above. With

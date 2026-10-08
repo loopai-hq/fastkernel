@@ -106,7 +106,7 @@ void checkPlans(uint32_t queryHeads, kv::Layout layout) {
                 bound.statisticsBytes >= plan.workspace.statisticsBytes,
             "prefill arena omitted a valid shorter plan");
   }
-  // SPLASH_STRIPED_VERIFY (fastkernel, default on): kVerifySplits absolute-page
+  // SPLASH_STRIPED_VERIFY (Pulsar, default on): kVerifySplits absolute-page
   // stripes per lane on the _striped twins; =0 is upstream's partition.
   const bool striped = metal::envSwitch("SPLASH_STRIPED_VERIFY");
   const std::string stripes = striped ? "_striped" : "";

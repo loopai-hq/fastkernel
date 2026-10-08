@@ -84,7 +84,7 @@ void requireStates(const GdnShape &shape, GdnStateStrides strides, uint32_t laye
 
 // SPLASH_GDN_VALUE_PARTS=4 (default; any other value turns it off): the
 // one-lane GDN scan in four value partitions. Serving +1.07%, texts 18/18
-// identical (fastkernel 1.0.0). Runs only under the fused split-K sums
+// identical (Pulsar 1.0.0). Runs only under the fused split-K sums
 // (GroupSums), whose finalize writes them.
 [[nodiscard]] bool valueParts4Enabled() noexcept {
   static const bool enabled = metal::envSwitch("SPLASH_GDN_VALUE_PARTS", "4");
@@ -109,7 +109,7 @@ void requireStates(const GdnShape &shape, GdnStateStrides strides, uint32_t laye
   return scanSkipsStore(kernel) ? name + "_nostore" : name;
 }
 
-// fastkernel's GDN kernels gate the grouped head order with bf16 norm weights.
+// Pulsar's GDN kernels gate the grouped head order with bf16 norm weights.
 void requireForkVariant(const GdnDecodeBuffers &buffers, const GdnShape &shape, GdnHeadOrder order,
                         const char *what) {
   if (order != GdnHeadOrder::Grouped || buffers.mixerNorm.float32)
@@ -175,7 +175,7 @@ void GDN::addPrefill(metal::CommandGraph &graph, GdnPrefillBuffers buffers,
 
 // SPLASH_GDN_FUSED_SUMS (default on): the one-lane GDN output kernel writes
 // the split-K out-projection's input sums the separate dispatch wrote
-// (byte-exact gate); texts 18/18 identical, ms/cycle -0.083 (fastkernel 1.0.0).
+// (byte-exact gate); texts 18/18 identical, ms/cycle -0.083 (Pulsar 1.0.0).
 LinearInput GDN::outputInput(const LinearPlan &plan, GdnShape shape, GdnHeadOrder order, const NormWeights &norm) {
   static const bool fused = metal::envSwitch("SPLASH_GDN_FUSED_SUMS");
   const bool groupSums = fused && plan.configuration().tile == LinearTile::Split32PrecomputedSums &&

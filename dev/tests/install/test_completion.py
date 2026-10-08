@@ -467,16 +467,16 @@ class CompletionTests(unittest.TestCase):
     def test_actual_zsh_tab(self):
         _, directory = self.layout()
         for line, expected in (
-            ("splash se", "splash serve "),
-            ("splash p", "splash pi "),
-            ("splash serve --model community/l", f"splash serve --model {LOCAL[1]} "),
-            ("splash serve --model=community/l", f"splash serve --model={LOCAL[1]} "),
+            ("splash se", "pulsar serve "),
+            ("splash p", "pulsar pi "),
+            ("pulsar serve --model community/l", f"pulsar serve --model {LOCAL[1]} "),
+            ("pulsar serve --model=community/l", f"pulsar serve --model={LOCAL[1]} "),
             (
-                "splash serve --model unsloth/Model-GGUF:UD",
-                f"splash serve --model {GGUF[1]} ",
+                "pulsar serve --model unsloth/Model-GGUF:UD",
+                f"pulsar serve --model {GGUF[1]} ",
             ),
-            ("splash claude --model community/l", "splash claude --model community/l"),
-            ("splash pi --model community/l", "splash pi --model community/l"),
+            ("pulsar claude --model community/l", "pulsar claude --model community/l"),
+            ("pulsar pi --model community/l", "pulsar pi --model community/l"),
         ):
             with self.subTest(line=line):
                 self.assertEqual(self.shell_tab(directory / "_splash", line), expected)
@@ -488,7 +488,7 @@ class CompletionTests(unittest.TestCase):
                 for command, option in (
                     ("splash", "--model="),
                     ("splash", "--model "),
-                    ("./splash", "--model="),
+                    ("./pulsar", "--model="),
                 ):
                     for typed, model in (
                         ("community/l", LOCAL[1]),
@@ -524,10 +524,10 @@ class CompletionTests(unittest.TestCase):
         self.assertEqual(
             self.shell_tab(
                 link / "install/completions/_splash",
-                "splash serve --model community/l",
+                "pulsar serve --model community/l",
                 upgrade=(link, new, old),
             ),
-            f"splash serve --model {LOCAL[1]} ",
+            f"pulsar serve --model {LOCAL[1]} ",
         )
 
     @unittest.skipUnless(os.access("/bin/zsh", os.X_OK), "Zsh is not installed")
@@ -544,11 +544,11 @@ class CompletionTests(unittest.TestCase):
         self.assertEqual(
             self.shell_tab(
                 entry,
-                "splash serve --model=community/l",
+                "pulsar serve --model=community/l",
                 upgrade=(opt, new, old),
                 autoload=True,
             ),
-            f"splash serve --model={LOCAL[1]} ",
+            f"pulsar serve --model={LOCAL[1]} ",
         )
 
     @unittest.skipUnless(FISH, "fish is not installed")
@@ -561,24 +561,24 @@ class CompletionTests(unittest.TestCase):
                 sorted(("serve", "claude", "codex", "opencode", "hermes", "pi")),
             ),
             ("splash co", ["codex"]),
-            ("splash serve --model ", models),
-            ("splash serve --model community/l", [LOCAL[1]]),
-            ("splash serve --model=community/l", [f"--model={LOCAL[1]}"]),
-            ("splash serve --model unsloth/Model-GGUF:UD", [GGUF[1]]),
+            ("pulsar serve --model ", models),
+            ("pulsar serve --model community/l", [LOCAL[1]]),
+            ("pulsar serve --model=community/l", [f"--model={LOCAL[1]}"]),
+            ("pulsar serve --model unsloth/Model-GGUF:UD", [GGUF[1]]),
             (
-                "splash serve --model=unsloth/Model-GGUF:",
+                "pulsar serve --model=unsloth/Model-GGUF:",
                 [f"--model={model}" for model in GGUF],
             ),
-            ("splash serve --port 8001 --model community/l", [LOCAL[1]]),
-            ("splash serve -- --model ", []),
-            ("splash serve --max-context ", []),
+            ("pulsar serve --port 8001 --model community/l", [LOCAL[1]]),
+            ("pulsar serve -- --model ", []),
+            ("pulsar serve --max-context ", []),
             # Neither model IDs as arguments nor option names, as in Bash.
-            ("splash serve ", []),
-            ("splash serve -", []),
+            ("pulsar serve ", []),
+            ("pulsar serve -", []),
             # A command only as the first word, and serve's --model only
             # after serve as the first word.
             ("splash --version s", []),
-            ("splash opencode serve --model ", []),
+            ("pulsar opencode serve --model ", []),
             *(
                 (f"splash {agent} --model ", [])
                 for agent in ("claude", "codex", "opencode", "hermes", "pi")
@@ -607,7 +607,7 @@ class CompletionTests(unittest.TestCase):
                 "source $argv[2]/install/completions/splash.fish; "
                 "/bin/rm $argv[2]; /bin/ln -s $argv[3] $argv[2]; /bin/rm -rf $argv[4]; "
                 "complete -C $argv[1]",
-                "splash serve --model community/l",
+                "pulsar serve --model community/l",
                 link,
                 new,
                 old,
@@ -633,7 +633,7 @@ class CompletionTests(unittest.TestCase):
                 "set -p fish_complete_path $argv[2]; complete -C $argv[1] >/dev/null; "
                 "/bin/rm $argv[3]; /bin/ln -s $argv[4] $argv[3]; /bin/rm -rf $argv[5]; "
                 "complete -C $argv[1]",
-                "splash serve --model=community/l",
+                "pulsar serve --model=community/l",
                 entry.parent,
                 opt,
                 new,

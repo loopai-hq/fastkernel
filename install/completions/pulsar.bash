@@ -4,7 +4,7 @@ case ${BASH_SOURCE[0]} in
     *) _splash_completion_source=$PWD/${BASH_SOURCE[0]} ;;
 esac
 
-_splash() {
+_pulsar() {
     local cur prev prefix value_prefix= trim= repository variant source directory
     local target model i
     COMPREPLY=()
@@ -72,4 +72,4 @@ _splash() {
     done < <("$directory/models" "$prefix")
 }
 
-complete -F _splash splash
+complete -F _pulsar pulsar

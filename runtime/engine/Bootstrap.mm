@@ -111,7 +111,7 @@ protocol::ProtocolLimits protocolLimitsFor(
   protocol::ProtocolLimits limits;
   limits.maxPromptTokens = maxContext;
   limits.maxLogicalOutputTokens = maxContext;
-  // fastkernel wide prompt lookup (SPLASH_WIDE_PROMPT_LOOKUP, with
+  // Pulsar wide prompt lookup (SPLASH_WIDE_PROMPT_LOOKUP, with
   // SPLASH_WIDE_LOOKUP32): a step emits up to its 16 or 32 verify rows and a
   // terminal anchor, and a grammar request simulates its anchor and proposals.
   constexpr uint32_t rows8 = model::ExecutionLimits::targetVerifyRows;

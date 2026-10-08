@@ -279,7 +279,7 @@ class Frontend:
         # The name generation and scoring responses report.
         self.response_model = served[0] if announce_served_name else model
         # /v1/models order: the name responses report first, so a client
-        # configured from data[0] (splash <client>) requests the name it gets
+        # configured from data[0] (pulsar <client>) requests the name it gets
         # back. Every name stays accepted.
         self.model_names = tuple(dict.fromkeys((self.response_model, model, *served)))
         if (

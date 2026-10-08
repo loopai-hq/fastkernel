@@ -1,5 +1,5 @@
 // Modified by meowkernels.
-// fastkernel wide prompt lookup, row invariance at the kernel level: a wide lookup
+// Pulsar wide prompt lookup, row invariance at the kernel level: a wide lookup
 // verifies one request's 16 or 32 rows as 2 or 4 lanes, and each row must
 // keep the bytes the 8-row verify gives it. For each core class's planner
 // and each Q4 projection shape of the 27B target's verify (the mixer input

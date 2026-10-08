@@ -72,7 +72,7 @@ enum class LinearEpilogue : uint8_t { None, Residual, GateUp, UpWithGate };
 // own columns, with optional K splits. GgufPrefill: the 128-row shared-stage
 // prefill tile. GgufRegister is Q4Register's twin over GGUF weights, exact:
 // every request lane in one threadgroup, optional K splits.
-// Split32PrecomputedSums (fastkernel, decode/linear_q4_split.metal) holds one
+// Split32PrecomputedSums (Pulsar, decode/linear_q4_split.metal) holds one
 // N32 tile per threadgroup in four K partitions reduced in threadgroup memory,
 // reading each row's fp32 input sums per quant group from the scratch
 // (LinearInput::GroupSums); four simdgroups at one lane, eight at two to four.
@@ -248,7 +248,7 @@ struct LinearBuffers final {
   // What the scratch table holds (for example after fused RMSNorm). A plan
   // that reads a table prepares one unless this describes its input.
   PreparedInput prepared{};
-  // SPLASH_SPLIT4_M16 (fastkernel; set per encode by the caller): a 16-row
+  // SPLASH_SPLIT4_M16 (Pulsar; set per encode by the caller): a 16-row
   // residual split-K tile runs as its footer + metadata-hoist twin.
   bool m16HoistFooter = false;
 };
@@ -272,7 +272,7 @@ enum class GpuFamilyClass : uint8_t { Apple9, Apple10 };
 
 // Where the Apple10 decode rule runs Split128 (SPLASH_SPLIT128): unset (Auto)
 // wherever no fork split-K rule takes the projection, 0 (Off) nowhere, which
-// gives fastkernel 1.0.0's plans, and 1 (First) ahead of the fork's rules,
+// gives Pulsar 1.0.0's plans, and 1 (First) ahead of the fork's rules,
 // which gives upstream's plans.
 enum class Split128Policy : uint8_t { Auto, Off, First };
 
@@ -299,7 +299,7 @@ public:
                                       LinearEpilogue epilogue = LinearEpilogue::None,
                                       const Projection *gate = nullptr) const;
   // The layout a decode RMS norm writes for the input of `plan`, a mixer's
-  // input projection: GroupSums under fastkernel's fused input sums
+  // input projection: GroupSums under Pulsar's fused input sums
   // (SPLASH_INPUT_FUSED_SUMS, SPLASH_M16_INPUT_SUMS, SPLASH_M24_INPUT_SUMS),
   // whose consumer add() then runs as the split-K tile over N/32 tiles; else
   // plan.input().
@@ -309,7 +309,7 @@ public:
   // SPLASH_M16_FFN_SUMS): add() then takes LinearBuffers::downSums, the
   // linear scratch's sums, and returns GroupSums of its output.
   [[nodiscard]] bool gateUpWritesDownSums(const LinearPlan &gateUp, const LinearPlan &down) const;
-  // fastkernel wide prompt lookup: whether each row of decode plan `wide`
+  // Pulsar wide prompt lookup: whether each row of decode plan `wide`
   // gets the K reduction it gets in decode plan `narrow` (the same projection
   // over fewer lanes). The sequential tiles share one full-K order; the
   // split-K consumer of a norm's group sums (normInput, for a mixer input
@@ -382,7 +382,7 @@ private:
                        const Projection *gate) const;
   void addGgufFloatSegments(metal::CommandGraph &graph, const LinearBuffers &buffers,
                             const Projection &projection, const LinearPlan &plan) const;
-  // fastkernel's consumer of an RMS norm's group sums (normInput).
+  // Pulsar's consumer of an RMS norm's group sums (normInput).
   void addPreparedSums(metal::CommandGraph &graph, const LinearBuffers &buffers, const AffineWeights &weights,
                        const LinearPlan &plan) const;
   // The fork's multi-lane split-K rule (SPLASH_M16_NARROW_SPLIT,

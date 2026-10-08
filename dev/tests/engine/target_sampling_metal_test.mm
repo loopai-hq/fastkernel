@@ -2434,7 +2434,7 @@ void blockVerification(MetalBackend &backend, uint32_t vocabulary,
 
 } // namespace
 
-// fastkernel wide prompt lookup (Sampling::addLookupVerify and
+// Pulsar wide prompt lookup (Sampling::addLookupVerify and
 // addLookupAcceptance): one request's 16 or 32 rows as one lane of that many
 // rows, each row's proposal the next input row with probability 1.
 struct LookupBatch final {

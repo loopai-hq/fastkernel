@@ -1262,7 +1262,7 @@ class ClientLifecycleTests(unittest.TestCase):
                 mock.patch("sys.stderr", io.StringIO()) as error,
             ):
                 self.assertEqual(launcher.main(["claude", *payload]), 1)
-            self.assertIn("splash serve", error.getvalue())
+            self.assertIn("pulsar serve", error.getvalue())
             execute.assert_not_called()
             install.assert_not_called()
 

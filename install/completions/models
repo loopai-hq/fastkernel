@@ -14,7 +14,7 @@ fi
 # official-models.txt is generated from the Splash collection
 # (dev/tools/update_model_catalog.py); suggested-models.txt names the upstream
 # models the README starts with. The cache is refreshed in the background by
-# `splash serve`; read as a union with the bundled catalogs so a missing or
+# `pulsar serve`; read as a union with the bundled catalogs so a missing or
 # stale cache can only fail to add entries.
 cache_file="$data_dir/catalog/official-models.txt"
 

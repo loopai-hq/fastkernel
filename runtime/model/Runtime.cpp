@@ -274,7 +274,7 @@ struct Runtime::Impl {
     // What its activation took from a cached state: the images that end
     // there were left out (ModelRequest::restoredTokens).
     uint32_t restoredTokens = 0;
-    // fastkernel prompt lookup (SPLASH_PROMPT_LOOKUP): the prompt's last
+    // Pulsar prompt lookup (SPLASH_PROMPT_LOOKUP): the prompt's last
     // kPromptLookupHistory tokens, then every emitted token; empty when the
     // request does not look up. Per-request counters for end()'s report and
     // SPLASH_LOOKUP_ADAPTIVE's match threshold.
@@ -340,7 +340,7 @@ struct Runtime::Impl {
   QwenStateStorage &states;
   std::unique_ptr<PrefillArena> prefillArena;
   std::unique_ptr<DecodeArena> decodeArena;
-  // fastkernel SPLASH_STREAMED_SUBMIT=N (default 48; 0 = off; read per
+  // Pulsar SPLASH_STREAMED_SUBMIT=N (default 48; 0 = off; read per
   // cycle): a decode command's first N dispatches commit as soon as they are
   // built, while the host builds and encodes the rest. Exact: building a
   // decode graph writes no buffer (page tables, uniforms and lane buffers
@@ -349,7 +349,7 @@ struct Runtime::Impl {
     const char *value = std::getenv("SPLASH_STREAMED_SUBMIT");
     return value ? std::strtoul(value, nullptr, 10) : 48;
   }
-  // fastkernel SPLASH_GRAMMAR_CHAIN: the event a chained constrained cycle
+  // Pulsar SPLASH_GRAMMAR_CHAIN: the event a chained constrained cycle
   // waits on, and the values taken from it so far.
   metal::SharedEvent chainEvent;
   uint64_t chainValues = 0;
@@ -377,7 +377,7 @@ struct Runtime::Impl {
   // seven tokens that followed the latest earlier occurrence of its context's
   // suffix instead of running the draft. The proposal is a point mass (q = 1),
   // so greedy and sampled acceptance keep the target's distribution exactly;
-  // with 16 rows: rewrite +52%, edit +24% (fastkernel 1.0.0, measured).
+  // with 16 rows: rewrite +52%, edit +24% (Pulsar 1.0.0, measured).
   const bool wideLookupEnabled = widePromptLookupEnabled();
   const bool promptLookupEnabled = wideLookupEnabled || metal::envSwitch("SPLASH_PROMPT_LOOKUP");
   // SPLASH_WIDE_LOOKUP_MIN_MATCH (default 16): the shortest suffix a wide
@@ -450,7 +450,7 @@ struct Runtime::Impl {
   ops::AneFfn *aneFfn;
   // The widest wide lookup this device keeps row-exact (8: none).
   uint32_t stableVerifyRows = kDecodeRows;
-  // SPLASH_GDN_DEFER (fastkernel; default on; read per cycle): a one-lane value-parts
+  // SPLASH_GDN_DEFER (Pulsar; default on; read per cycle): a one-lane value-parts
   // verify commits only the convolution carry and leaves its recurrent rows
   // pending; the request's next such verify replays them in its scan, from the
   // state before them (the lane's next cell) into its current cell, and scans
@@ -488,7 +488,7 @@ struct Runtime::Impl {
   // SPLASH_DRAFT_AHEAD_LOOKUP_QUIET=K (default 8): launch a block only after K
   // cycles without a prompt-lookup cycle. Lookup hits cluster, and a block a
   // lookup cycle drops costs a wait for it against ~0.3 ms an adopted one
-  // saves (fastkernel 1.0.0).
+  // saves (Pulsar 1.0.0).
   const uint32_t aheadLookupQuiet = [] {
     const char *value = std::getenv("SPLASH_DRAFT_AHEAD_LOOKUP_QUIET");
     return value ? static_cast<uint32_t>(std::strtoul(value, nullptr, 10)) : 8u;
@@ -2341,7 +2341,7 @@ struct Runtime::Impl {
   // adopts it only when an inline draft would compute the same block (same
   // requests, lanes, positions, anchors, uniforms and head rows); otherwise
   // the host waits for it before writing any lane buffer and drafts inline.
-  // fastkernel 1.0.0: serving -0.257 ms/cycle, outputs byte-identical.
+  // Pulsar 1.0.0: serving -0.257 ms/cycle, outputs byte-identical.
   // SPLASH_DRAFT_AHEAD_GRAMMAR (default on, with it): constrained cycles
   // launch and adopt blocks too. Their proposals are unconstrained (the host
   // simulates the grammar over them and masks only the target), so an adopted
@@ -2526,7 +2526,7 @@ struct Runtime::Impl {
         : impl_(impl), lanes_(std::move(lanes)),
           items_(items.begin(), items.end()), adopted_(adopted),
           wake_(std::move(completion)) {
-      // fastkernel SPLASH_GRAMMAR_CHAIN (default on, read per cycle; one
+      // Pulsar SPLASH_GRAMMAR_CHAIN (default on, read per cycle; one
       // request): the target forward and the commit join the draft's command.
       // The draft's event step signals once the proposals exist; the commit
       // part waits until the host has written the masks. With

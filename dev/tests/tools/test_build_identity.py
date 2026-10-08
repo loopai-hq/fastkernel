@@ -268,7 +268,7 @@ class CompileConfigurationTests(unittest.TestCase):
                 return log.read_text().splitlines()
 
             outputs = (
-                "splash",
+                "pulsar",
                 "engine-tests/vision-encoder",
                 "engine-tests/attention-sweep",
                 "engine-tests/metal-backend.metallib",
@@ -309,7 +309,7 @@ class CompileConfigurationTests(unittest.TestCase):
                                 str(build / "engine/libsplash.a"), calls()[start:]
                             )
                             self.assertIn(
-                                str(build / "splash.metallib"), calls()[start:]
+                                str(build / "pulsar.metallib"), calls()[start:]
                             )
                         if linked == targets[3]:
                             self.assertIn(
@@ -393,7 +393,7 @@ class CompileConfigurationTests(unittest.TestCase):
                 f"{name}={sys.executable} {compiler}"
                 for name in ("CXX", "METAL", "METALLIB", "AR")
             ]
-            library = str(build / "splash.metallib")
+            library = str(build / "pulsar.metallib")
             attention = str(build / "engine-tests/q8-attention.metallib")
             native = str(build / "engine/engine/Status.o")
             unrelated = str(build / "engine-tests/metal-backend.metallib")

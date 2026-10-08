@@ -32,7 +32,7 @@ using splash::test::rejects;
 using splash::test::require;
 
 constexpr std::string_view kSettingUp =
-    "Setting up the Neural Engine FFN split (splash serve --disable-ane keeps the FFN on the GPU).";
+    "Setting up the Neural Engine FFN split (pulsar serve --disable-ane keeps the FFN on the GPU).";
 
 DeviceCapabilities device() {
   DeviceCapabilities result;

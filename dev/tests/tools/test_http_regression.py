@@ -58,9 +58,9 @@ class HttpRegressionTests(unittest.TestCase):
     def test_benchmark_runs_any_installation_and_holds_its_assembly(self):
         with TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            binary = root / "splash"
+            binary = root / "pulsar"
             binary.touch()
-            (root / "splash.metallib").touch()
+            (root / "pulsar.metallib").touch()
             models = root / "models"
             # A Splash package records manifest.json; an upstream selection
             # links an assembly that records model.json.

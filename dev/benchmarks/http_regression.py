@@ -361,7 +361,7 @@ def parse_args(argv=None):
     # A build that speaks this server's wire version loads the weights into
     # memory; its weight-digests reads the images it loads.
     for binary in (args.baseline_binary, args.binary):
-        for path in (binary, binary.parent / "splash.metallib"):
+        for path in (binary, binary.parent / "pulsar.metallib"):
             if not path.is_file():
                 parser.error(f"missing retained executable/library: {path}")
         if not weights.loads_in_memory(binary.resolve().parent):

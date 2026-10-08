@@ -4,7 +4,7 @@ upstream and GGUF tests install from. The legacy package tests
 (test_models.py) mock huggingface_hub's functions directly: the frozen legacy
 installer calls them with other arguments (token, repo_type,
 force_download, and model_info without a timeout). The installer checks a
-model's configuration with the engine, build/splash, which make test-python
+model's configuration with the engine, build/pulsar, which make test-python
 builds."""
 
 import hashlib

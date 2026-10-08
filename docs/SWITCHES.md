@@ -1,7 +1,7 @@
 # Switches
 
-fastkernel's changes to Splash each have an environment variable. Set it in front of the serve command, for example
-`SPLASH_DRAFT_AHEAD=0 ./splash serve --model incoai/Qwen3.8-27B-Splash`. The defaults are the tuned settings.
+Pulsar's changes to Splash each have an environment variable. Set it in front of the serve command, for example
+`SPLASH_DRAFT_AHEAD=0 ./pulsar serve --model incoai/Qwen3.8-27B-Splash`. The defaults are the tuned settings.
 
 - Speed switches are on by default. `=0` turns one off and runs Splash 1.3.0's path for that part.
 - With every fork switch off, execution matches Splash 1.3.0. The memory plan's margin policy (2% of memory in place
@@ -16,7 +16,7 @@ fastkernel's changes to Splash each have an environment variable. Set it in fron
 | `SPLASH_NARROW_SPLIT` | on | Extends that split to narrow outputs, such as the draft model's. |
 | `SPLASH_M16_NARROW_SPLIT` | on | The same split for two requests at once. |
 | `SPLASH_M24_NARROW_SPLIT` | on | The same split for three requests at once. |
-| `SPLASH_SPLIT128` | auto | Splash 1.3.0's Split128 kernels where Splash 1.3.0 picks them. `0`: fastkernel's split kernels only. `1`: Split128 first. |
+| `SPLASH_SPLIT128` | auto | Splash 1.3.0's Split128 kernels where Splash 1.3.0 picks them. `0`: Pulsar's split kernels only. `1`: Split128 first. |
 | `SPLASH_INPUT_FUSED_SUMS` | on | The input norm hands each projection the sums of its input, so the split multiplication skips recomputing them. |
 | `SPLASH_M16_INPUT_SUMS` | on | The same for two requests. |
 | `SPLASH_M24_INPUT_SUMS` | on | The same for three requests. |

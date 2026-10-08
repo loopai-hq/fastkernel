@@ -1700,7 +1700,7 @@ void run(const std::string &metallibPath) {
 }
 
 
-// fastkernel SPLASH_STREAMED_SUBMIT / SPLASH_CHUNKED_SUBMIT: a head commits
+// Pulsar SPLASH_STREAMED_SUBMIT / SPLASH_CHUNKED_SUBMIT: a head commits
 // before its command is submitted; the rest runs after it, even for memory
 // that no dispatch binds (reached through addresses, as KV extents are). A
 // head whose command never comes is abandoned; misuse is refused.

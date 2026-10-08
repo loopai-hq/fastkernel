@@ -4,7 +4,7 @@
 
 Shell completion must never block and must work offline, so it only ever reads
 files. The bundled catalog is versioned with the source; the cache is
-refreshed in the background by `splash serve` and lives
+refreshed in the background by `pulsar serve` and lives
 under the per-user data directory.
 
 Readers (install/completions/models) take the union of the two. A cache that
@@ -144,7 +144,7 @@ def _offline() -> bool:
 def spawn_refresh() -> None:
     """Refresh the cache in a detached child, if it looks stale.
 
-    `splash serve` replaces itself with the server via execve, so this cannot
+    `pulsar serve` replaces itself with the server via execve, so this cannot
     be a thread. It is deliberately fire-and-forget: the caller never learns
     the outcome, and a failure is indistinguishable from not having run.
     """

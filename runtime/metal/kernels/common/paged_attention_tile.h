@@ -59,7 +59,7 @@ inline bool splash_verify_attention_contract_valid(
 
 // Split and reduce derive the same balanced partition of each query tile's
 // visible pages. Causal masking remains per query row inside each split.
-// Striped (fastkernel, SPLASH_STRIPED_VERIFY): split s owns absolute pages s,
+// Striped (Pulsar, SPLASH_STRIPED_VERIFY): split s owns absolute pages s,
 // s + splits, ... instead, so a page's split, and each row's reduction, do not
 // depend on where the row sits in its verify tile.
 inline uint splash_attention_pages(uint visible_tokens) {

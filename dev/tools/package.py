@@ -36,9 +36,9 @@ INSTALL_FILES = (
 )
 COMPLETION_FILES = (
     "models",
-    "_splash",
-    "splash.bash",
-    "splash.fish",
+    "_pulsar",
+    "pulsar.bash",
+    "pulsar.fish",
     "official-models.txt",
     "suggested-models.txt",
 )
@@ -89,7 +89,7 @@ def stage_runtime(destination, version):
         ("install", INSTALL_FILES),
         ("install/completions", COMPLETION_FILES),
         ("server", SERVER_FILES),
-        ("engine", ("splash", "splash.metallib")),
+        ("engine", ("pulsar", "pulsar.metallib")),
     ):
         (destination / folder).mkdir()
         source = ROOT / ("build" if folder == "engine" else folder)
@@ -101,8 +101,8 @@ def stage_runtime(destination, version):
         json.dumps(
             {
                 "version": version,
-                "binary_sha256": digest(destination / "engine/splash"),
-                "metallib_sha256": digest(destination / "engine/splash.metallib"),
+                "binary_sha256": digest(destination / "engine/pulsar"),
+                "metallib_sha256": digest(destination / "engine/pulsar.metallib"),
             },
             indent=2,
         )
@@ -146,15 +146,15 @@ class Splash < Formula
       exec "#{{opt_libexec}}/python/bin/python3" -u "#{{opt_libexec}}/install/launcher.py" "$@"
     SH
     chmod 0755, bin/"splash"
-    zsh_completion.install_symlink libexec/"install/completions/_splash"
-    bash_completion.install_symlink libexec/"install/completions/splash.bash" => "splash"
-    fish_completion.install_symlink libexec/"install/completions/splash.fish"
+    zsh_completion.install_symlink libexec/"install/completions/_pulsar"
+    bash_completion.install_symlink libexec/"install/completions/pulsar.bash" => "splash"
+    fish_completion.install_symlink libexec/"install/completions/pulsar.fish"
   end
 
   def caveats
     <<~CAVEAT
       Serve a model:
-        splash serve --model unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M
+        pulsar serve --model unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M
     CAVEAT
   end
 

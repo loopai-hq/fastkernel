@@ -112,7 +112,7 @@ TEST_Q8_ATTENTION_TEST := $(ENGINE_TEST_BUILD)/q8-flash-attention
 TEST_Q8_PREFILL_TEST := $(ENGINE_TEST_BUILD)/q8-chunked-prefill
 TEST_Q4_SGMATRIX_TEST := $(ENGINE_TEST_BUILD)/q4-sgmatrix
 TEST_Q4_BATCH_TEST := $(ENGINE_TEST_BUILD)/q4-batched-projection
-# fastkernel wide prompt lookup: 16/32-row plans keep each row's 8-row bytes.
+# Pulsar wide prompt lookup: 16/32-row plans keep each row's 8-row bytes.
 TEST_WIDE_ROW_INVARIANCE := $(ENGINE_TEST_BUILD)/wide-row-invariance
 TEST_Q4_PREFILL_TEST := $(ENGINE_TEST_BUILD)/q4-prefill-projection
 TEST_MOE_METAL_TEST := $(ENGINE_TEST_BUILD)/moe-metal

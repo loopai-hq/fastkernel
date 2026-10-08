@@ -1,7 +1,7 @@
 # What we built
 
-fastkernel is new engine code, not a settings change. Compared with Splash 1.3.0, the engine's
-`runtime/` folder has **54 files changed, 6,187 lines added and 379 removed**.
+Pulsar is new engine code, not a settings change. Compared with Splash 1.3.0, the engine's
+`runtime/` folder has **57 files changed, 6,191 lines added and 383 removed**.
 
 - 2,700 of the new lines are Metal shaders and GPU headers. Metal is Apple's language for GPU code.
 - There are **38 new GPU kernels**: 137 `kernel void` functions, up from
@@ -27,7 +27,7 @@ The engine writes an answer in steps. A token is a word or part of a word.
 2. The full model checks all the guesses at once and keeps the ones it agrees with.
 3. The CPU hands this work to the GPU as GPU launches. A GPU launch is one job for the GPU to run.
 
-Speed is in tok/s: tokens written per second. We measured every gain below on an M5 Max with fastkernel 1.0.0, one change at a time. We
+Speed is in tok/s: tokens written per second. We measured every gain below on an M5 Max with Pulsar 1.0.0, one change at a time. We
 also checked each change's output (see "Is the output exact?" in [BENCHMARKS.md](BENCHMARKS.md)).
 
 ## 1. New GPU kernels for the 4-bit matrix multiplications
@@ -82,7 +82,7 @@ Tool calls that copy text work the same way.
 For these answers, the engine guesses the next words straight from your prompt, and the full model checks them. When
 the guesses match, the full model keeps many words in one step.
 
-For example, with fastkernel 1.0.0 a code edit on a 24 GB M5 Pro ran at 121 tok/s, and a coding question at 73.
+For example, with Pulsar 1.0.0 a code edit on a 24 GB M5 Pro ran at 121 tok/s, and a coding question at 73.
 
 How the wide check stays exact:
 
@@ -115,7 +115,7 @@ Code: `runtime/metal/MetalBackend.mm`, `runtime/metal/CommandGraph.hpp`, `runtim
 - **The engine keeps prompt checkpoints as a cache.** A checkpoint is the model's state, saved while it reads a
   prompt. A second agent sharing an 11K-token prompt gets its first token in 4.4 s instead of 13.3 s.
 
-With fastkernel 1.0.0 on a 24 GB M5 Pro, this gave 8,185 tokens of context at default settings. With the GPU given
+With Pulsar 1.0.0 on a 24 GB M5 Pro, this gave 8,185 tokens of context at default settings. With the GPU given
 20 GB, it gave 69,625. The context is the most text the model can hold at once: your prompt plus its answer.
 
 Code: `runtime/engine/MemoryPlan.cpp`, `runtime/engine/RuntimeResources.mm`, `runtime/model/DFlashDraft.cpp`,

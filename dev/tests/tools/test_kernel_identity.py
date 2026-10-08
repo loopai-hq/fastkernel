@@ -30,7 +30,7 @@ class KernelIdentityTests(unittest.TestCase):
             listings = {}
             for name, functions in (("baseline", baseline), ("candidate", candidate)):
                 (root / name / "build").mkdir(parents=True)
-                metallib = root / name / "build/splash.metallib"
+                metallib = root / name / "build/pulsar.metallib"
                 metallib.touch()
                 # Another layout of the library moves every module.
                 offset = 0x1E8B1 if name == "baseline" else 0x2F000

@@ -49,7 +49,7 @@ std::string_view pipeline(KernelLayout layout, std::string_view kv4Group6,
   return layout == KernelLayout::Kv4Group6 ? kv4Group6 : kv2Group8;
 }
 
-// SPLASH_STRIPED_VERIFY (fastkernel, default on; read per plan): every verify
+// SPLASH_STRIPED_VERIFY (Pulsar, default on; read per plan): every verify
 // lane runs kVerifySplits splits that stripe absolute pages
 // (paged_attention_tile.h), so a row's attention bytes do not depend on where
 // it sits in its 8-row tile; wide prompt lookup's row invariance needs it. =0

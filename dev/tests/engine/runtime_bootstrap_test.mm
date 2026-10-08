@@ -722,7 +722,7 @@ void testProtocolLimitsFollowTheModel() {
   model::ModelCapabilities capabilities;
   capabilities.vocabularySize = 248320;
   const protocol::ProtocolLimits limits = protocolLimitsFor(capabilities, 4096);
-  // fastkernel wide prompt lookup (default on) verifies up to 32 rows;
+  // Pulsar wide prompt lookup (default on) verifies up to 32 rows;
   // without it, the engine's 8 verify rows.
   const bool wide = std::getenv("SPLASH_WIDE_PROMPT_LOOKUP") == nullptr;
   const uint32_t rows = wide ? 32 : 8;

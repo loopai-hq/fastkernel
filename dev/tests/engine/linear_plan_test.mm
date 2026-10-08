@@ -119,7 +119,7 @@ std::optional<LinearConfig> expectedOneLane(uint32_t cores,
   return std::nullopt;
 }
 
-// fastkernel's split-K rules (Linear.cpp oneLaneSplitConfig and
+// Pulsar's split-K rules (Linear.cpp oneLaneSplitConfig and
 // narrowSplitShape), ahead of Split128 on Apple10 unless SPLASH_SPLIT128=1:
 // plain and residual projections of at most one N128 tile per core over K of
 // at least 4096 in whole 1024-input blocks, N >= 256, as N32 tiles of four K
@@ -1303,7 +1303,7 @@ void apple10AffineCoreLaws() {
                         (!split || (c.groups == 0 && c.simdgroups == LinearSimdgroups::Eight)),
                     "Apple10 split plan tile or split count");
             require(k / 256 >= s, "Apple10 split partition below one 256-input block");
-            // fastkernel's split-K tile (four K partitions in one threadgroup)
+            // Pulsar's split-K tile (four K partitions in one threadgroup)
             // takes a grid of at most one tile per core ahead of Split128
             // (expectedForkSplit), so the count laws compare Split128 plans.
             const auto forked = [&](const Linear &l, uint32_t width) {
@@ -1451,7 +1451,7 @@ void producerTableContract(metal::MetalBackend &backend) {
             "linear table buffer holds", "the norm wrote a table without scratch");
     require(graph.empty() &&
                 Normalization::addRms(graph, rows, norm, rows, kHidden, kRows).layout == LinearInput::Plain &&
-                // fastkernel's SPLASH_STAGED_NORM_WIDE (default on) stages 5120-wide rows, same bits.
+                // Pulsar's SPLASH_STAGED_NORM_WIDE (default on) stages 5120-wide rows, same bits.
                 plainKernel(graph, metal::envSwitch("SPLASH_STAGED_NORM_WIDE") ? "norm_rms_staged_wide" : "norm_rms"),
             "the norm's table contract");
   }
@@ -2108,7 +2108,7 @@ void numericalCase(metal::MetalBackend &backend, Linear &linear,
                   dispatch.threadsPerThreadgroup.y == 1 && dispatch.threadsPerThreadgroup.z == 1,
               "production dispatch threads differ from Linear plan scope");
     if (workload.phase == LinearPhase::Decode) {
-      // The Q4 register tile prepares its table and fastkernel's split-K tile
+      // The Q4 register tile prepares its table and Pulsar's split-K tile
       // its input sums in a dispatch of their own.
       const bool prepares = plan.usesQ4Register() || plan.configuration().tile == LinearTile::Split32PrecomputedSums;
       const uint32_t dispatches = prepares ? 2 : plan.secondPipeline().empty() ? 1 : 2;
@@ -2206,7 +2206,7 @@ void numericalCase(metal::MetalBackend &backend, Linear &linear,
           throw std::runtime_error("an fp32 output does not round to its bf16 plan's output");
         }
     }
-    // fastkernel's split-K tile reassociates K inside its threadgroup.
+    // Pulsar's split-K tile reassociates K inside its threadgroup.
     if (plan.configuration().splits > 1 || plan.usesQ4Register() ||
         plan.configuration().tile == LinearTile::Split32PrecomputedSums) {
       splitOutputs.push_back({{output, output + elements}, immutableResidual, plan.pipeline(), plan.usesQ4Register()});

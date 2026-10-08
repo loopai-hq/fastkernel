@@ -38,7 +38,7 @@ EngineMemoryPlan plan() {
   device.maxThreadgroupMemoryBytes = 32 * 1024;
   device.maxThreadgroupWidth = 1024;
   device.hasUnifiedMemory = true;
-  // An explicit 23 GiB ceiling (below fastkernel's automatic 24 GiB - 2%)
+  // An explicit 23 GiB ceiling (below Pulsar's automatic 24 GiB - 2%)
   // keeps the readiness scenarios' budget fixed.
   return test::requireMemoryPlan(
       device, test::modelMemoryProfile(2 * kGiB, 1 * kGiB, 1 * kGiB), 23 * kGiB);

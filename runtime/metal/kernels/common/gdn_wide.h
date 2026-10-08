@@ -3,8 +3,8 @@
 
 #include "metal/kernels/common/gdn_value_parts.h"
 
-// fastkernel's wide-lookup GDN kernels (ops::GDN::addDecode16/addCommit16),
-// ported from fastkernel 1.0.0 onto 1.3.0's compiled-width variants; included
+// Pulsar's wide-lookup GDN kernels (ops::GDN::addDecode16/addCommit16),
+// ported from Pulsar 1.0.0 onto 1.3.0's compiled-width variants; included
 // by decode/gdn.metal only. One logical 16- or 32-row request is stored in
 // physical M8 lanes 0..Tiles-1. As in the M8 kernels of 1.3.0 there are no
 // completion counters and no recurrent rows: the scans write their rows into
@@ -94,7 +94,7 @@ GDN_COMMIT16_ENTRY(verify_gdn_commit32_t2_vh32, 16, 32, 128, 8192, 12544, 2, 4)
 GDN_COMMIT16_ENTRY(verify_gdn_commit32_t3_vh32, 16, 32, 128, 8192, 12544, 3, 4)
 #undef GDN_COMMIT16_ENTRY
 
-// The per-row arithmetic of fastkernel 1.0.0's M8 verify (its
+// The per-row arithmetic of Pulsar 1.0.0's M8 verify (its
 // gdn_decode_prologue / gdn_decode_scan at Tokens = 8) over Tokens rows:
 // conv+SiLU and q/k norms per row on one simdgroup (rows simd_group + 8j),
 // the delta rule over all rows with each state row kept in registers (the

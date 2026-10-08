@@ -1,18 +1,18 @@
 // Modified by meowkernels.
 #pragma once
 
-// fastkernel's GDN value parts (SPLASH_GDN_VALUE_PARTS=4, ops/GDN.cpp), ported
-// from fastkernel 1.0.0 onto 1.3.0's compiled-width variants; included by
+// Pulsar's GDN value parts (SPLASH_GDN_VALUE_PARTS=4, ops/GDN.cpp), ported
+// from Pulsar 1.0.0 onto 1.3.0's compiled-width variants; included by
 // decode/gdn.metal only. Qualified M8/B1/VH48 port. Four threadgroups own
 // disjoint 32-value slices of each head; part zero alone publishes commit
 // artifacts. 1.3.0 keeps no recurrent rows and no completion counters: the
 // scan writes its rows into the hidden rows, and the finalize gates them in
 // place.
 
-// fastkernel 1.0.0's gated RMSNorm of the recurrent rows (1.3.0's prefill and
+// Pulsar 1.0.0's gated RMSNorm of the recurrent rows (1.3.0's prefill and
 // decode gates replaced it), one task per (token, value head) and one lane per
 // dimension, tasks strided over `groups` threadgroups. The fork's GDN kernels
-// keep it so their bytes stay fastkernel 1.0.0's. Each thread reads its row
+// keep it so their bytes stay Pulsar 1.0.0's. Each thread reads its row
 // element before it writes it, so `recurrent` may be `hidden`.
 template <uint ValueHeads, uint HeadDim, uint ConvDim, uint Simdgroups = 8>
 inline void

@@ -27,7 +27,7 @@ class TokenConstraint:
     VOCABULARY = 248320
     # A mask request simulates at most the engine's target verify rows
     # (ExecutionLimits::targetVerifyRows, 8: the pending anchor and seven
-    # draft proposals; 16 or 32 with fastkernel's wide prompt lookup) and
+    # draft proposals; 16 or 32 with Pulsar's wide prompt lookup) and
     # takes a mask before and after each.
     DEFAULT_MAX_SIMULATION_TOKENS = 8
     MAX_SIMULATION_TOKENS = 32

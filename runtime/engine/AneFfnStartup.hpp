@@ -13,7 +13,7 @@
 
 namespace splash::engine {
 
-// Whether the prefill FFN's Neural Engine split may run (splash serve
+// Whether the prefill FFN's Neural Engine split may run (pulsar serve
 // --disable-ane turns it off), and the split a dev tool runs instead of
 // calibrating one.
 struct AneFfnSetting final {

@@ -62,7 +62,7 @@
 // decode norm of a 2048-wide model and its short prefill chunks.
 #define SPLASH_STAGED_NORM_WIDTH 2048u
 #define SPLASH_STAGED_NORM_ROWS 64u
-// SPLASH_STAGED_NORM_WIDE (fastkernel): norm_rms_staged_wide and
+// SPLASH_STAGED_NORM_WIDE (Pulsar): norm_rms_staged_wide and
 // norm_rms_staged_split_sums hold rows up to this width (the 27B's 5120) in
 // threadgroup memory, with SPLASH_STAGED_NORM_THREADS threads;
 // shared/normalization.metal sizes their staging arrays and

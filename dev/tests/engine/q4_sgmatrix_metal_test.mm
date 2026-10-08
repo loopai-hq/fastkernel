@@ -332,7 +332,7 @@ void fusedNorm(metal::MetalBackend &backend, uint32_t k, uint32_t rows, LinearIn
   metal::CommandGraph graph;
   require(Normalization::addRms(graph,c.input,c.weight,output,k,rows).layout==LinearInput::Plain,
           "plain norm claimed a table");
-  // fastkernel's SPLASH_STAGED_NORM_WIDE (default on) stages the other bf16
+  // Pulsar's SPLASH_STAGED_NORM_WIDE (default on) stages the other bf16
   // rows up to SPLASH_STAGED_NORM_WIDE_WIDTH as well, same bits.
   const bool stagedWide = metal::envSwitch("SPLASH_STAGED_NORM_WIDE") && !float32 &&
       k <= SPLASH_STAGED_NORM_WIDE_WIDTH && k % 4 == 0;

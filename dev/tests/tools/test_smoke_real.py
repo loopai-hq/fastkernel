@@ -129,7 +129,7 @@ class SmokeRealTests(unittest.TestCase):
     def test_server_paths_are_resolved_from_caller_directory(self):
         with TemporaryDirectory() as directory, contextlib.chdir(directory):
             model_root = Path("model root")
-            binary = Path("native build/splash")
+            binary = Path("native build/pulsar")
             for absolute in (False, True):
                 with self.subTest(absolute=absolute):
                     arguments = SimpleNamespace(
@@ -178,7 +178,7 @@ class SmokeRealTests(unittest.TestCase):
     def server_arguments():
         return SimpleNamespace(
             model_root=Path("/models/owner/model"),
-            binary=Path("/build/splash"),
+            binary=Path("/build/pulsar"),
             model="test-model",
             max_context=None,
             max_memory=None,

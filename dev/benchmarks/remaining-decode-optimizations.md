@@ -67,8 +67,8 @@ The attention sweep alternates libraries, warms the GPU, and takes medians of
 one/three/four lanes (24 cases per machine). Speedups are baseline/candidate.
 
 ```sh
-build/engine-tests/attention-sweep build/splash.metallib --phases verify \
-  --compare-metallib BASELINE/splash.metallib --lanes 1,3,4 --repeat 31 \
+build/engine-tests/attention-sweep build/pulsar.metallib --phases verify \
+  --compare-metallib BASELINE/pulsar.metallib --lanes 1,3,4 --repeat 31 \
   --histories LENGTHS
 ```
 

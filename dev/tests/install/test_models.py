@@ -710,7 +710,7 @@ class ModelArtifactTest(unittest.TestCase):
 
     def test_link_prints_the_selection_link_of_the_source_options(self):
         # make's MODEL_ROOT is this output; a relative draft folder names the
-        # installation splash serve --draft-model selects from the same folder.
+        # installation pulsar serve --draft-model selects from the same folder.
         models = self.root / "models"
         draft = self.root / "draft"
         draft.mkdir()

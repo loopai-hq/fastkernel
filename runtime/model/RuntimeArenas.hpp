@@ -259,7 +259,7 @@ enum class DecodeTensor : uint32_t {
   TopPartialValues,
   ProposalProbs,
   ProposedTokens,
-  // fastkernel wide prompt lookup (lane 0's only; empty while it is off):
+  // Pulsar wide prompt lookup (lane 0's only; empty while it is off):
   // the rows each 8-row tile retains, which the GDN and draft commits read,
   // and the point-mass candidates of a sampled wide verify's drafted rows.
   LookupRetainedHalves,
@@ -303,7 +303,7 @@ constexpr bool isLayerMajorTensor(DecodeTensor tensor) noexcept {
   return isGdnLayerTensor(tensor) || isAttentionLayerTensor(tensor);
 }
 
-// SPLASH_WIDE_PROMPT_LOOKUP (fastkernel, default on): a dense target's
+// SPLASH_WIDE_PROMPT_LOOKUP (Pulsar, default on): a dense target's
 // single-request lookups verify 16 rows as two lanes of one request, each
 // row keeping the 8-row verify's bytes (QwenTarget::rowStableVerifyRows).
 [[nodiscard]] bool widePromptLookupEnabled() noexcept;

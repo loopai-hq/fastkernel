@@ -17,7 +17,7 @@ using that SDK. Packaged users need none of these development tools.
 git clone https://github.com/incoai/splash.git
 cd splash
 make -j4
-./splash serve --model mlx-community/Qwen3.8-27B-4bit
+./pulsar serve --model mlx-community/Qwen3.8-27B-4bit
 ```
 
 `--model` names an upstream Hugging Face model: an MLX affine 4-bit, group-64
@@ -62,7 +62,7 @@ completions finds them. In a source checkout, source
 Zsh after `compinit`, or `install/completions/splash.fish` for fish.
 
 Completion suggests commands, the official model IDs (bundled, and as
-`splash serve` last refreshed them), the upstream models the README starts with
+`pulsar serve` last refreshed them), the upstream models the README starts with
 and installed models, a GGUF's `OWNER/REPO:VARIANT` included, without network
 access.
 
@@ -70,7 +70,7 @@ access.
 
 ### Server options
 
-`splash serve --help` lists every option with examples:
+`pulsar serve --help` lists every option with examples:
 
 | Option | Default | Purpose |
 | --- | --- | --- |
@@ -118,7 +118,7 @@ releases.
 The default listener is `127.0.0.1:8000`. To accept LAN connections:
 
 ```sh
-splash serve --model mlx-community/Qwen3.8-27B-4bit --host 0.0.0.0 --api-key YOUR_KEY
+pulsar serve --model mlx-community/Qwen3.8-27B-4bit --host 0.0.0.0 --api-key YOUR_KEY
 ```
 
 Connect to the server's LAN IP. `--host` selects the IPv4 bind address;
@@ -156,10 +156,10 @@ origin. With `'*'` every page open in a browser that reaches the server can use
 it, so set `--api-key` too; the server warns at startup without one.
 
 Use `--port 8001` or set `SPLASH_PORT=8001` to select another port. The agent
-launchers take the same `--port`, as in `splash pi --port 8001`, or read the
+launchers take the same `--port`, as in `pulsar pi --port 8001`, or read the
 same `SPLASH_PORT`; `--port` overrides it. They pass every other argument,
 `--help` included, to the agent; to pass an agent's own `--port`, start its
-arguments with `--`, as in `splash opencode --port 8001 -- --port 4096`.
+arguments with `--`, as in `pulsar opencode --port 8001 -- --port 4096`.
 Separate ports allow separate servers. Each plans its memory from the whole Mac,
 as if it ran alone, so give each a `--max-memory` that leaves room for the
 others. The packaged agent launchers connect to loopback, so use a listener
@@ -192,7 +192,7 @@ fit, startup prints a memory budget breakdown and stops.
 Select the target KV format when starting the server:
 
 ```bash
-splash serve --model mlx-community/Qwen3.8-27B-4bit --kv-format bf16
+pulsar serve --model mlx-community/Qwen3.8-27B-4bit --kv-format bf16
 ```
 
 BF16 avoids target KV quantization, uses approximately twice the target KV
@@ -280,7 +280,7 @@ files. [Installation](#installation) gives the mechanics.
 To download new models to another disk, set the cache location before serving:
 
 ```sh
-HF_HUB_CACHE=/Volumes/Models/huggingface splash serve --model mlx-community/Qwen3.8-27B-4bit
+HF_HUB_CACHE=/Volumes/Models/huggingface pulsar serve --model mlx-community/Qwen3.8-27B-4bit
 ```
 
 `HF_HUB_CACHE` selects the Hugging Face download cache. Alternatively, set
@@ -292,12 +292,12 @@ are not moved.
 
 | Path | Holds |
 | --- | --- |
-| `~/Library/Application Support/Splash` | The data directory of a packaged install: `models/`, the installed models' links into the Hugging Face cache and the metadata derived from GGUFs; `runtime/`, the locks of running servers; `catalog/`, the official model list `splash serve` last fetched; and `thinking.key`, which encrypts the Messages reasoning a response hides. A source checkout keeps the first three in `install/models` and `build/runtime`. |
+| `~/Library/Application Support/Splash` | The data directory of a packaged install: `models/`, the installed models' links into the Hugging Face cache and the metadata derived from GGUFs; `runtime/`, the locks of running servers; `catalog/`, the official model list `pulsar serve` last fetched; and `thinking.key`, which encrypts the Messages reasoning a response hides. A source checkout keeps the first three in `install/models` and `build/runtime`. |
 | Hugging Face cache (`HF_HUB_CACHE`, by default `~/.cache/huggingface/hub`) | Model and draft downloads, with Splash's pins under `refs/splash` ([revisions](#revisions)). |
 | `~/Library/Caches/Splash/prefix-cache` (`--cache-dir`) | The [persistent cache](#persistent-cache), with `--persistent-cache` only. |
 | `$TMPDIR/splash-cache-*` | The [SSD cache](#ssd-cache)'s files without `--persistent-cache`, or when another process holds the persistent cache's directory or it cannot be used: one of KV pages and one of states, together at most about `--max-cache-disk`. Each is unlinked as it is created, so no directory lists it, and its space returns when the engine exits, even after a crash. `--cache-dir` does not move them; they follow `TMPDIR`. |
 | `~/Library/Logs/Splash/crash` | [Crash traces](#failures-and-crash-traces), with `SPLASH_CRASH_TRACE=1` only. |
-| Pi's `models.json` (`~/.pi/agent`, or `PI_CODING_AGENT_DIR`) and the Hermes profile (`~/.hermes/profiles/splash`, or `splash-<port>`) | The settings `splash pi` and `splash hermes` write ([agent launchers](#agent-launchers)). Every agent keeps its sessions in its own home; `splash claude`, `codex` and `opencode` pass their settings at launch and write none. |
+| Pi's `models.json` (`~/.pi/agent`, or `PI_CODING_AGENT_DIR`) and the Hermes profile (`~/.hermes/profiles/splash`, or `splash-<port>`) | The settings `pulsar pi` and `pulsar hermes` write ([agent launchers](#agent-launchers)). Every agent keeps its sessions in its own home; `pulsar claude`, `codex` and `opencode` pass their settings at launch and write none. |
 
 ## API model aliases
 
@@ -312,11 +312,11 @@ reject the real ID. For them, add `--announce-served-name`, which requires
 `--served-model-name`: responses then report the first alias, whichever
 accepted name the request used, and `/v1/models` lists that alias first and
 gives every other entry, the real ID included, that alias as its `root`, so
-`splash <client>` configures clients with it. `/status` keeps reporting the
+`pulsar <client>` configures clients with it. `/status` keeps reporting the
 loaded model.
 
 ```sh
-splash serve --model mlx-community/Qwen3.8-27B-4bit --served-model-name local-qwen
+pulsar serve --model mlx-community/Qwen3.8-27B-4bit --served-model-name local-qwen
 ```
 
 Aliases cannot contain whitespace, control characters, `\`, `%`, `?`, `#`,
@@ -336,7 +336,7 @@ renders an alias: `xhigh` for `high` and `max`, `low` for `minimal`; one that
 rejects `none` renders by `enable_thinking` alone while thinking is off.
 
 ```sh
-splash serve --model mlx-community/Qwen3.8-27B-4bit --default-reasoning-effort none
+pulsar serve --model mlx-community/Qwen3.8-27B-4bit --default-reasoning-effort none
 ```
 
 `/apply-template` uses the same default. Anthropic `thinking` keeps its protocol
@@ -353,23 +353,23 @@ passes itself, such as `tools` or `add_generation_prompt`.
 
 ## Agent launchers
 
-Agents must already be installed; `splash claude|opencode|codex|hermes|pi`
+Agents must already be installed; `pulsar claude|opencode|codex|hermes|pi`
 connects to the running server. Arguments pass through, for example
-`splash codex resume --last` or `splash hermes chat -q "Hello"`.
+`pulsar codex resume --last` or `pulsar hermes chat -q "Hello"`.
 
-`splash pi` adds a `splash` provider to Pi's `models.json` (`splash-<port>` for
+`pulsar pi` adds a `splash` provider to Pi's `models.json` (`splash-<port>` for
 a server on another port), preserving other providers, settings and sessions.
 The chat page names no model, and the launchers configure each client with the
 model ID the running server reports, so a client need not list a model in its
 own catalog for Splash to serve it under its full repository ID.
-`splash opencode`, `pi` and `hermes` configure an output limit per response of
+`pulsar opencode`, `pi` and `hermes` configure an output limit per response of
 32K tokens (`CLIENT_RESPONSE_TOKENS` in `install/clients.py`); OpenCode and
 Hermes, which reserve it out of the context they compact at, get a quarter of a
 context under 128K instead. Hermes 2026.9.7 and later ignore it and, like Codex,
 leave the limit to the server; Claude Code keeps its own, which
 `CLAUDE_CODE_MAX_OUTPUT_TOKENS` raises.
 
-`splash hermes` runs Hermes in the `splash` profile (`splash-<port>`) of the
+`pulsar hermes` runs Hermes in the `splash` profile (`splash-<port>`) of the
 user's Hermes root, `~/.hermes` or the root `HERMES_HOME` belongs to, and
 creates it with `hermes profile create` on first use. It writes only the
 profile's model settings; Hermes's tools and the root's `config.yaml` remain
@@ -377,7 +377,7 @@ the user's.
 
 With `SPLASH_API_KEY` set, Pi's `models.json` and the Hermes profile name the
 variable instead of holding the key: Pi and Hermes read the key from their
-environment, so one started without `splash` needs the variable in its shell.
+environment, so one started without `pulsar` needs the variable in its shell.
 A file these launchers rewrite keeps its mode; one they create is private.
 
 ## Upgrading from earlier versions
@@ -1001,8 +1001,8 @@ its path, `/v1/systemone`'s included: OpenAI's `server_error` with code
 A target is identified by its own configuration: an MLX `config.json`, or the
 one `gguf.model_config` derives from the selected GGUF's header, read with a
 few HTTP range requests. Before any weight file is downloaded, the installer
-runs the engine's own check on it, `model-check` (`build/splash model-check`
-in a checkout, `engine/splash model-check` in a packaged installation), which
+runs the engine's own check on it, `model-check` (`build/pulsar model-check`
+in a checkout, `engine/pulsar model-check` in a packaged installation), which
 holds it to the rules every start applies to the installation
 (`inspectSourceConfiguration` in `ModelDescriptor.mm`) and names the family
 it describes. For a GGUF the check also takes the scalar metadata of its
@@ -1026,9 +1026,9 @@ shared-expert gate 8-bit. Every start checks the configuration again. Remote
 Python code is not loaded.
 
 ```bash
-splash serve --model mlx-community/Qwen3.6-35B-A3B-4bit
-splash serve --model unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M
-splash serve --model mlx-community/Qwen3.8-27B-4bit --language-only
+pulsar serve --model mlx-community/Qwen3.6-35B-A3B-4bit
+pulsar serve --model unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M
+pulsar serve --model mlx-community/Qwen3.8-27B-4bit --language-only
 ```
 
 A model ID with `--revision`, `--language-only` or `--draft-model` is a
@@ -1237,7 +1237,7 @@ importing the HTTP entry module, and keeps one import style in `server/` and
 runs as `python -m server.server`; `install/launcher.py`, `install/models.py`
 and `install/catalog.py`, which run as scripts, import their siblings through
 a PEP 366 header. `serve_options.py` defines the options
-`splash serve` shares with the server once, each with its check, default,
+`pulsar serve` shares with the server once, each with its check, default,
 help and help group, and how the launcher passes it on; it imports only the
 standard library, since the launcher parses them before `.venv` exists.
 
@@ -1265,9 +1265,9 @@ installation lock, the command line (`install/models.py --model ID
 prepare|verify|link`, where `link` prints the selection link) and running the
 engine's checks. Since the installer checks a model with the engine, a source
 checkout builds the engine before it installs, as `make install` and the first
-`./splash serve` do, and a packaged install ships it. The assembly's
+`./pulsar serve` do, and a packaged install ships it. The assembly's
 `model.json` records the resolved sources and selected formats. The native
-loader reads it, and `splash serve`, `test-http-real` and the HTTP regression
+loader reads it, and `pulsar serve`, `test-http-real` and the HTTP regression
 benchmark hold it while they run, so a concurrent installation cannot collect
 the assembly they serve. It is local installation metadata, not a file model
 publishers supply.
@@ -1667,7 +1667,7 @@ load again within 10 s stops the split like a failure while serving, and the
 request runs on the GPU alone. A split that stopped unloads its program at the
 next idle release once the ANE has reported every evaluation, and keeps it
 unloaded. The split's logits differ from the GPU's alone (KL about 1e-4 to 7e-4
-on Qwen3.8-27B); `splash serve --disable-ane` keeps the FFN on the GPU, and
+on Qwen3.8-27B); `pulsar serve --disable-ane` keeps the FFN on the GPU, and
 `backend-benchmark --ane-ffn-share` runs a given share over chunks of
 `--ane-ffn-minimum-rows` rows or more (512 by default), which
 `backend_regression` pins to its first round's. `make test-engine-cpu` runs
@@ -2006,7 +2006,7 @@ client configuration and model installation) or `dev/tests/tools`
 
 The real-model targets run against an installation in this checkout's
 `install/models`: run `make install` with the same options first, or in the
-same command, as above. They take `MODEL` exactly as `splash serve --model`
+same command, as above. They take `MODEL` exactly as `pulsar serve --model`
 does, and `REVISION`, `DRAFT_MODEL` and `LANGUAGE_ONLY=1` as its `--revision`,
 `--draft-model` and `--language-only`:
 
@@ -2015,8 +2015,8 @@ does, and `REVISION`, `DRAFT_MODEL` and `LANGUAGE_ONLY=1` as its `--revision`,
 | `verify-models` | the installer's restarts without the Hub, `verify --full`, and the record of the weight images (`dev/tools/installer_restarts.py`, `weight-digests`, [Release check](#release-check)) |
 | `test-real` | vision parity with the family's fixture in `dev/tests/fixtures/vision-parity/` when the installation serves vision, and the native model runtime oracle |
 | `test-http-real` | the HTTP frontend on an isolated server (`dev/tests/smoke_real.py`); with `HTTP_SMOKE_ARGS="--persistent-cache --max-cache-disk 8G"`, instead of that smoke, the [persistent cache](#persistent-cache) across a restart in a fresh cache directory: a clean stop, a restart that takes the restore point back, and a next turn that restores the prompt from disk; `release-check` runs both |
-| `test-agent-real` | the five official clients through `splash serve` (`dev/tests/agent_real.py`), in `AGENT_SCENARIO` `complete` (the default) or `smoke` |
-| `test-release-real` | the HTTP smoke and all five clients on one `splash serve` |
+| `test-agent-real` | the five official clients through `pulsar serve` (`dev/tests/agent_real.py`), in `AGENT_SCENARIO` `complete` (the default) or `smoke` |
+| `test-release-real` | the HTTP smoke and all five clients on one `pulsar serve` |
 | `test-performance-real` | the native decode, partial-prefix and short-prompt benchmark, or with `BASELINE` its ABBA comparison with that build (`dev/benchmarks/backend_regression.py`) |
 | `release-check` | one model on this Mac ([Release check](#release-check)) |
 
@@ -2060,7 +2060,7 @@ only desktop applications open, a 24 GB Mac runs it for those variants.
 `make check-native-build` builds the affine source oracle and `weight-digests` so
 they cannot break unnoticed. No target runs the oracle, as it needs real
 models: after `make all build/engine-tests/affine-source-oracle`, pass it
-`build/splash.metallib`, an installed MLX model's `target` directory and the
+`build/pulsar.metallib`, an installed MLX model's `target` directory and the
 matching installed package to compare every byte of their images.
 
 Compare performance on the same idle Mac with the same model and workload.
@@ -2078,7 +2078,7 @@ and experiment notes out of the source tree and commits.
 
 A release is checked once per source identity, and then on each Apple GPU
 family (an Apple9 M3 and an Apple10 M5) against a retained baseline build,
-`BASELINE`: a checkout whose `build/` holds `splash`, `splash.metallib`,
+`BASELINE`: a checkout whose `build/` holds `pulsar`, `pulsar.metallib`,
 `engine-tests/backend-benchmark` and, for a build that loads the weights into
 memory (1.2.0 and later), `engine-tests/weight-digests`. `release-check` fails
 without it. The baseline must load the model: it is the previous release's
@@ -2150,7 +2150,7 @@ that model alone once the Mac has cooled.
 
 `.venv/bin/python dev/tools/kernel_identity.py BASELINE/build build` compares
 the AIR of each kernel the decode path may run in the two builds'
-`splash.metallib` (`--match` for others) and fails if any differs.
+`pulsar.metallib` (`--match` for others) and fails if any differs.
 
 Two pairs of constants in `runtime/engine/Protocol.hpp` and `server/protocol.py`
 version what the server and the engine exchange. When the native wire layout
@@ -2186,8 +2186,8 @@ report. Its cache checks reuse each context's cached prefix, so they need that
 memory free: when other programs leave too little, the engine evicts cached
 prefixes and the checks fail, naming what each lookup found.
 
-For a same-machine HTTP regression check, retain a `splash` binary **and its
-adjacent `splash.metallib`** built from a checkout with the same native wire
+For a same-machine HTTP regression check, retain a `pulsar` binary **and its
+adjacent `pulsar.metallib`** built from a checkout with the same native wire
 version and status schema as this one (the server refuses any other), with
 `engine-tests/weight-digests` beside them, then run from the candidate
 checkout, after
@@ -2196,7 +2196,7 @@ checkout, after
 ```sh
 .venv/bin/python -m dev.benchmarks.http_regression \
   --model unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M \
-  --baseline-binary /path/to/baseline/build/splash \
+  --baseline-binary /path/to/baseline/build/pulsar \
   --contexts 2048,10000 --samples 5
 ```
 

@@ -55,7 +55,7 @@ struct GDNBatchCommitParams {
 static_assert(sizeof(GDNBatchCommitParams) == 24,
               "GDN commit parameters are 24 bytes on both sides");
 
-// SPLASH_GDN_DEFER (fastkernel, ops/GDN.cpp): a B1 lane's recurrent commit
+// SPLASH_GDN_DEFER (Pulsar, ops/GDN.cpp): a B1 lane's recurrent commit
 // deferred into its next scan. `count` pending rows (0..8; 0: none) are the
 // previous cycle's retained rows, held in the verify scratch rows of lane slot
 // `parity` of every layer.

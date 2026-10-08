@@ -26,7 +26,7 @@ class PackageTests(unittest.TestCase):
                 ("install", package.INSTALL_FILES),
                 ("install/completions", package.COMPLETION_FILES),
                 ("server", package.SERVER_FILES),
-                ("build", ("splash", "splash.metallib")),
+                ("build", ("pulsar", "pulsar.metallib")),
             ):
                 (root / folder).mkdir(parents=True)
                 for name in names:
@@ -86,7 +86,7 @@ class PackageTests(unittest.TestCase):
             for folder, names in (
                 ("install", package.INSTALL_FILES),
                 ("server", package.SERVER_FILES),
-                ("build", ("splash", "splash.metallib")),
+                ("build", ("pulsar", "pulsar.metallib")),
             ):
                 (root / folder).mkdir(parents=True)
                 for name in names:
@@ -165,7 +165,7 @@ class PackageTests(unittest.TestCase):
                     namespace = {"__file__": str(prefix / "install/paths.py")}
                     exec(compile(source, "paths.py", "exec"), namespace)
                     self.assertTrue(namespace["PACKAGED"])
-                    self.assertEqual(namespace["BINARY"], prefix / "engine/splash")
+                    self.assertEqual(namespace["BINARY"], prefix / "engine/pulsar")
                     self.assertEqual(namespace["PYTHON"], prefix / "python/bin/python3")
                     results.append((namespace["MODELS"], namespace["RUNTIME"]))
                 self.assertEqual(results[0], results[1])
@@ -257,7 +257,7 @@ puts SplashMacOSRequirement.check
             opt.symlink_to(previous)
             completion_entries = (
                 ("share/zsh/site-functions/_splash", "_splash"),
-                ("etc/bash_completion.d/splash", "splash.bash"),
+                ("etc/bash_completion.d/splash", "pulsar.bash"),
                 ("share/fish/vendor_completions.d/splash.fish", "splash.fish"),
             )
             old_assets = previous / "libexec/install/completions"

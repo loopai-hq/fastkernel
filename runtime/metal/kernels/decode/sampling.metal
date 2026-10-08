@@ -1010,7 +1010,7 @@ inline bool order_before(uint key, uint id, uint other_key, uint other_id) {
   return key > other_key || (key == other_key && id < other_id);
 }
 
-// fastkernel 1.0.0's lane-distributed sorted top-32, in the order of the
+// Pulsar 1.0.0's lane-distributed sorted top-32, in the order of the
 // logits: lane r holds rank r, an empty rank {kNoKey, ~0u}. Each lane offers
 // one token, or none when !valid; the offers that pass rank 31 are inserted
 // one at a time, so the list stays in registers. Every lane of the simdgroup
@@ -1643,7 +1643,7 @@ kernel void draft_select_edges(
 // acceptance verifies the distribution it proposed from. Registers only: the
 // kept set is a bit mask and, with the loops over the candidates unrolled,
 // every weight index is a compile-time constant (data-indexed arrays spill to
-// thread-private memory, +50 us/cycle measured in fastkernel 1.0.0).
+// thread-private memory, +50 us/cycle measured in Pulsar 1.0.0).
 inline uint draft_top_p_select(thread const float (&scores)[16],
                                float maximum, float temperature, float top_p,
                                float uniform, device float *q_probs) {
@@ -1963,7 +1963,7 @@ kernel void decode_accept_dflash(
   }
 }
 
-// fastkernel wide prompt lookup (SPLASH_WIDE_PROMPT_LOOKUP): one request's
+// Pulsar wide prompt lookup (SPLASH_WIDE_PROMPT_LOOKUP): one request's
 // Rows verify rows (16 or 32), row i following its proposal input_tokens[i + 1]
 // with probability 1 (a point mass). A greedy request accepts while the
 // proposal is the row's argmax. A sampled one accepts row i iff its uniform is

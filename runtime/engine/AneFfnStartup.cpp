@@ -131,7 +131,7 @@ AneFfnStart decide(const AneFfnModel &model, const AneFfnSetting &setting, uint3
     return gpuAlone(kind, std::move(reason), automaticWith(assumed));
   };
 
-  logLine("Setting up the Neural Engine FFN split (splash serve --disable-ane keeps the FFN on the GPU).");
+  logLine("Setting up the Neural Engine FFN split (pulsar serve --disable-ane keeps the FFN on the GPU).");
   const auto started = AwakeClock::now();
   const auto seconds = [&] {
     std::ostringstream text;

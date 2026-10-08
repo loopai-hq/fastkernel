@@ -31,7 +31,7 @@ float envFloat(const char *name, float fallback) {
   return parsed;
 }
 
-// SPLASH_DRAFT_TAU: 0.85 won fastkernel 1.0.0's exact block-rule replay
+// SPLASH_DRAFT_TAU: 0.85 won Pulsar 1.0.0's exact block-rule replay
 // (+0.80% acceptance, every category >= 0); its sampling passed chi^2 over
 // 800 seeds. t = 1 multiplies by exactly 1: the drafter's own q.
 float draftTau() {

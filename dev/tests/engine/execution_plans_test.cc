@@ -104,7 +104,7 @@ void baselinePlans() {
       {
         const std::array<uint32_t, 1> deep{131072};
         const auto scaled = plans.verifyAttention(1, queryHeads, kvLayout, deep);
-        // fastkernel's SPLASH_STRIPED_VERIFY (default on) keeps 32 stripes.
+        // Pulsar's SPLASH_STRIPED_VERIFY (default on) keeps 32 stripes.
         const bool striped = metal::envSwitch("SPLASH_STRIPED_VERIFY");
         require(scaled.splits == (striped ? 32 : kv::kVerifyMaximumSplits) &&
                     scaled.laneSplits[0] == scaled.splits,

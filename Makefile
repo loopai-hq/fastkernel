@@ -37,7 +37,7 @@ MODEL_ROOT = $(if $(MODEL),$(shell $(MODEL_INSTALL) link))
 MODEL_RESULTS = build/release/$(subst :,--,$(subst /,--,$(MODEL)))
 
 BUILD := build
-TARGET := $(BUILD)/splash
+TARGET := $(BUILD)/pulsar
 METAL_BUILD := $(BUILD)/metal
 # Production kernels are grouped by execution phase under
 # runtime/metal/kernels/{prefill,decode,shared}; every .metal file there is
@@ -63,14 +63,14 @@ PROD_METALFLAGS := -std=metal4.0 -O3 -Wall -Wextra -Werror -Iruntime \
 ENGINE_CXXFLAGS := -std=c++20 -O3 -Wall -Wextra -Werror -Iruntime \
 	$(MACOS_TARGET_FLAG)
 ENGINE_OBJCXXFLAGS := $(ENGINE_CXXFLAGS) -fobjc-arc
-LIB := $(BUILD)/splash.metallib
+LIB := $(BUILD)/pulsar.metallib
 .PHONY: all clean force-build-identity install \
 	install-environment _install-environment \
 	platform-check model-selection preflight
 
 all: $(TARGET)
 
-# The installer checks a model's configuration with the engine (build/splash
+# The installer checks a model's configuration with the engine (build/pulsar
 # model-check) before it downloads any weight. It takes the models' own lock
 # for what it writes; the download holds up no other setup of the
 # environment.
@@ -79,7 +79,7 @@ install: model-selection platform-check install-environment $(TARGET)
 
 model-selection:
 	@test -n "$(MODEL)" || { \
-		echo "error: set MODEL to a model ID as splash serve --model takes it (OWNER/REPO[:VARIANT])" >&2; \
+		echo "error: set MODEL to a model ID as pulsar serve --model takes it (OWNER/REPO[:VARIANT])" >&2; \
 		exit 1; \
 	}
 	@case "$(LANGUAGE_ONLY)" in ""|0|1) ;; *) \

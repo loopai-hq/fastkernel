@@ -27,13 +27,13 @@ to change them:
    failing line, and the vision and affine drivers come first.
 
    ```sh
-   make build/splash.metallib build/engine-tests/vision-preparation \
+   make build/pulsar.metallib build/engine-tests/vision-preparation \
      build/engine-tests/affine-preparation build/engine-tests/gguf-preparation
    python3 dev/tests/engine/run_vision_preparation.py build/engine-tests/vision-preparation \
      dev/tests/fixtures/weight-goldens/goldens.json
    MTL_SHADER_VALIDATION=1 python3 dev/tests/engine/run_affine_preparation.py \
-     build/engine-tests/affine-preparation build/splash.metallib dev/tests/fixtures/weight-goldens/goldens.json
-   MTL_SHADER_VALIDATION=1 build/engine-tests/gguf-preparation build/splash.metallib \
+     build/engine-tests/affine-preparation build/pulsar.metallib dev/tests/fixtures/weight-goldens/goldens.json
+   MTL_SHADER_VALIDATION=1 build/engine-tests/gguf-preparation build/pulsar.metallib \
      dev/tests/fixtures/weight-goldens/goldens.json
    ```
 

@@ -102,7 +102,7 @@ struct SamplingBuffers final {
   metal::MetalBuffer candidateRows{};
 };
 
-// fastkernel wide prompt lookup: one request's verify rows, each row's
+// Pulsar wide prompt lookup: one request's verify rows, each row's
 // proposal the next verify input row (sampling.metal decode_accept_lookup).
 struct LookupAcceptanceBuffers final {
   metal::MetalBuffer inputTokens;
@@ -138,7 +138,7 @@ struct AcceptanceBuffers final {
 // SPLASH_BLOCK_VERIFY (default on, read at construction): a verify batch
 // whose lanes all sample is accepted by block verification (Sun et al. 2024)
 // instead of the token rule. Both keep the target's distribution; the block
-// rule accepts more draft tokens per cycle (+1.29% in fastkernel 1.0.0).
+// rule accepts more draft tokens per cycle (+1.29% in Pulsar 1.0.0).
 // SPLASH_SAMPLER_TOPK32 (default on, read per selection): a selection whose
 // sampled lanes keep at most SPLASH_SAMPLER_TOP_TOKENS tokens by top-k and
 // none by min-p searches each row from its shards' top tokens, which writes
@@ -195,7 +195,7 @@ public:
       std::span<const uint32_t> maximumRetained,
       std::span<const SamplingPolicy> policies, uint32_t stopToken0,
       uint32_t stopToken1) const;
-  // fastkernel wide prompt lookup (SPLASH_WIDE_PROMPT_LOOKUP): one request's
+  // Pulsar wide prompt lookup (SPLASH_WIDE_PROMPT_LOOKUP): one request's
   // `rows` verify rows (16 or 32) selected as one lane of that many rows, row r
   // reading mask row r + 1 and, below the last row, following its proposal,
   // verify input row r + 1, whose point-mass candidates the buffers' draft
