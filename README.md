@@ -108,17 +108,18 @@ DFlash 2), and answer quality was not compared.
 
 All sessions: [docs/BENCHMARKS.md](docs/BENCHMARKS.md#pulsar-vs-lithos-metal-greedy-10-prompts).
 
-Pulsar 1.1.0 vs other engines (2026-10-07):
+Pulsar vs other engines:
 
-| Engine | Guesses ahead with | Its speed | Pulsar 1.1.0's speed | Pulsar 1.1.0 is |
+| Engine | Guesses ahead with | Its speed | Pulsar's speed | Pulsar is |
 |---|---|---:|---:|---|
+| lithos-metal 0.1.2 | DSpark draft head | 75.7 | 108.3 | **1.44× faster** |
 | Splash 1.3.0 | DFlash 2 draft model | 89.0 | 99.2 | **1.11× faster** |
 | MTPLX | MTP | 65.7 | 118.2 | **1.80× faster** |
 | AX Engine | MTP | 38.3 | 119.6 | **3.12× faster** |
 | MLX-LM | no draft model (its default) | 30.9 | 114.9 | **3.72× faster** |
 | llama.cpp | no draft model (its default) | 26.7 | 110.7 | **4.14× faster** |
 
-Speeds are in tok/s (tokens per second). MTP is the model's own built-in guesser. Each pair ran in one session, taking
+Speeds are in tok/s (tokens per second). The lithos-metal row is Pulsar 1.1.5 (2026-10-10); the other rows are Pulsar 1.1.0 (2026-10-07). MTP is the model's own built-in guesser. Each pair ran in one session, taking
 turns on the same prompts: 12 prompts against Splash 1.3.0 (chat, math, code, a code file, a 32K-token agent task, a
 multilingual prompt and two long-context prompts), the 6 standard prompts against the others (5 greedy prompts against
 AX Engine). In chat, Pulsar 1.1.0 writes
