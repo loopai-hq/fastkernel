@@ -19,49 +19,70 @@ confidence interval, written [low, high], is the range the true average falls in
 
 ## M5 Max (40-core GPU, 128 GB)
 
-### Pulsar 1.1.3 vs lithos-metal 0.1.2, greedy, 10 prompts
+### Pulsar vs lithos-metal, greedy, 10 prompts
 
-On our 128 GB M5 Max running macOS 27.2, Pulsar 1.1.3 delivered 1.36× the client-observed decode throughput of
-lithos-metal 0.1.2 across these 10 prompts (geometric mean; one ABBA session, greedy decoding, thinking off, output
-capped at 1,024 tokens). The engines used different quantized checkpoints and drafters; task-quality parity was not
-evaluated.
+On our 128 GB M5 Max running macOS 27.2, Pulsar delivered 1.30–1.46× the client-observed decode throughput of
+lithos-metal in every session we ran, and was faster on every prompt in every session (geometric mean over 10 prompts;
+each one ABBA session, greedy decoding, thinking off, output capped at 1,024 tokens).
 
-| Prompt | lithos-metal 0.1.2 | Pulsar 1.1.3 | ratio |
-|---|---:|---:|---:|
-| lithos-metal's launch-video prompt (tip calculator) | 105.2 | 136.0 | 1.29× |
-| code | 144.3 | 180.8 | 1.25× |
-| math | 116.3 | 166.0 | 1.43× |
-| code file, 2,247 tokens | 84.8 | 101.8 | 1.20× |
-| chat 1 | 67.0 | 85.0 | 1.27× |
-| chat 2 | 61.3 | 80.4 | 1.31× |
-| chat 3 | 56.3 | 91.4 | 1.62× |
-| chat 4 | 55.7 | 88.8 | 1.59× |
-| chat 5 | 55.7 | 92.4 | 1.66× |
-| multilingual | 55.1 | 62.2 | 1.13× |
-| **Geometric mean** | | | **1.36×** |
+| Session | Pulsar | lithos-metal | Pulsar tok/s | lithos-metal tok/s | Pulsar is (95% range) |
+|---|---|---|---:|---:|---|
+| 1: 2026-10-09 03:42 | 1.1.3 | main 236475f, built from source | 108.5 | 80.2 | **1.36×** (1.26–1.48×) |
+| 2: 2026-10-09 14:27 | 1.1.4 | 0.1.2, official release | 95.6 | 74.7 | **1.30×** (1.23–1.38×) |
+| 3: 2026-10-09 15:37 | 1.1.4 | 0.1.2, official release | 105.8 | 73.3 | **1.46×** (1.36–1.56×) |
+| 4: 2026-10-10 00:12 | 1.1.5 | 0.1.2, official release | 108.3 | 75.7 | **1.44×** (1.35–1.53×) |
 
-Decode tok/s = (completion tokens − 1) / (last − first streamed chunk), mean of two runs per prompt. The interval
-around 1.36× is 1.26–1.48×, a prompt-bootstrap interval for this one session; it does not measure session-to-session
-variation.
+tok/s is the mean of the 10 prompts' means; "Pulsar is" is the geometric mean of the per-run ratios, and its 95% range
+is a bootstrap over the 10 prompts within that session. The sessions differ in lithos-metal's build and warm-up (see
+Settings below). Median time to first token in session 4: 0.22 s on Pulsar, 0.39 s on lithos-metal.
+
+Per prompt, decode tok/s as lithos-metal / Pulsar (ratio), mean of two runs per prompt:
+
+| Prompt | Session 1 | Session 2 | Session 3 | Session 4 |
+|---|---:|---:|---:|---:|
+| lithos-metal's launch-video prompt (tip calculator) | 105.2 / 136.0 (1.29×) | 96.6 / 116.0 (1.20×) | 100.6 / 130.1 (1.29×) | 104.2 / 131.8 (1.26×) |
+| code | 144.3 / 180.8 (1.25×) | 140.3 / 159.8 (1.14×) | 136.8 / 173.0 (1.26×) | 137.9 / 182.9 (1.33×) |
+| math | 116.3 / 166.0 (1.43×) | 112.6 / 147.2 (1.31×) | 96.4 / 163.7 (1.71×) | 104.8 / 168.6 (1.61×) |
+| code file, 2,247 tokens | 84.8 / 101.8 (1.20×) | 79.7 / 99.1 (1.24×) | 78.5 / 107.4 (1.37×) | 79.4 / 106.2 (1.34×) |
+| chat 1 | 67.0 / 85.0 (1.27×) | 57.6 / 75.1 (1.30×) | 56.4 / 82.4 (1.46×) | 57.0 / 84.7 (1.49×) |
+| chat 2 | 61.3 / 80.4 (1.31×) | 55.8 / 70.0 (1.25×) | 54.8 / 77.3 (1.41×) | 57.0 / 78.3 (1.37×) |
+| chat 3 | 56.3 / 91.4 (1.62×) | 52.4 / 78.0 (1.49×) | 53.2 / 88.2 (1.66×) | 54.0 / 89.3 (1.65×) |
+| chat 4 | 55.7 / 88.8 (1.60×) | 52.8 / 74.7 (1.41×) | 54.9 / 85.3 (1.55×) | 56.5 / 86.5 (1.53×) |
+| chat 5 | 55.7 / 92.4 (1.66×) | 51.7 / 79.5 (1.54×) | 53.8 / 88.6 (1.65×) | 55.8 / 91.0 (1.63×) |
+| multilingual | 55.1 / 62.2 (1.13×) | 47.5 / 56.9 (1.20×) | 48.0 / 62.0 (1.29×) | 50.2 / 63.7 (1.27×) |
+
+Decode tok/s = (completion tokens − 1) / (last − first streamed chunk).
 
 <details>
 <summary>Settings and limits</summary>
 
 - **Machine:** M5 Max (40-core GPU, 128 GB), macOS 27.2, AC power, thermal state nominal. No other model server was
-  running; an earlier run with a second model server resident slowed both engines and is not used.
+  running.
 - **Order:** one server at a time: Pulsar, lithos-metal, lithos-metal, Pulsar. Each block ran at least 120 s of
   warm-up requests, then the 10 prompts.
-- **Pulsar 1.1.3:** the release package, `SPLASH_DRAFT_HEAD_IDS=$PWD/data/head-ranked.u32 ./pulsar serve --model
-  incoai/Qwen3.8-27B-Splash`, plus `--port` and `--max-context 40K`.
-- **lithos-metal 0.1.2:** built from source at 236475f, `lithos-metal serve --model nvidia/Qwen3.8-27B-NVFP4` (checkpoint
-  482ca0f, DSpark head LithosAI/Qwen3.8-27B-DSpark-NVFP4 b169bc4), plus `--port` and `--max-context 34816` (its default
-  is 32,768; we did not test whether the larger setting changes its speed).
+- **Pulsar:** the release package (1.1.3, 1.1.4, then 1.1.5), `SPLASH_DRAFT_HEAD_IDS=$PWD/data/head-ranked.u32
+  ./pulsar serve --model incoai/Qwen3.8-27B-Splash`, plus `--port` and `--max-context 40K`. 1.1.4 runs the same GPU
+  code as 1.1.3 (identical metallib).
+- **lithos-metal, session 1:** main 236475f (14 commits after the v0.1.2 tag), built from source, `lithos-metal serve
+  --model nvidia/Qwen3.8-27B-NVFP4` plus `--port` and `--max-context 34816` (its default is 32,768). Its warm-up was 2
+  requests per block.
+- **lithos-metal, sessions 2 to 4:** the official v0.1.2 prebuilt, installed like its Homebrew formula, at its
+  default context, with at least 6 warm-up requests per block. lithos-metal compiles one session per sampling seed; in
+  session 2 each warm-up request used its own seed, and in sessions 3 and 4 every warm-up request used the seed then
+  measured, with a ~2.5K-token prompt every third request.
+- **Checkpoints:** lithos-metal runs NVIDIA's checkpoint (revision 482ca0f) with its DSpark draft head
+  (LithosAI/Qwen3.8-27B-DSpark-NVFP4, b169bc4). That checkpoint is NVFP4 in the MLP and LM head and FP8 in the attention
+  and linear-attention projections, so it has a 17.6 GB logical target-weight payload per verification pass, against
+  14.4 GB for the 4-bit package Pulsar runs (mlx-community/Qwen3.8-27B-4bit, packed by Inco AI) with DFlash 2.
+- **lithos-metal on this Mac:** its own round benchmark (v0.1.2) measured 48.04 ms per round at 128 tokens, against the
+  42.6 ms its authors published for a 48 GB M5 Max on macOS 26.5.1. In session 2 its serving rounds (48–56 ms) matched
+  that tool.
 - **Requests:** greedy (temperature 0), reasoning_effort "none" (lithos-metal serves without thinking), streamed, at most
   1,024 tokens. Four prompts reach the cap on both engines, including the tip calculator, so this measures decode
   speed over a bounded answer, not time to a finished answer.
-- **Prompts:** the 12-prompt Splash 1.3.0 set without its three long prompts (no conclusion here about long contexts),
-  plus the prompt from lithos-metal's launch video. Answers differ in length and content between the engines, so this
-  compares delivered throughput, not identical work. Answer quality was not compared.
+- **Prompts:** the 12-prompt Splash 1.3.0 set without its three long prompts, plus the prompt from lithos-metal's launch
+  video. Answers differ in length and content between the engines, so this compares delivered throughput, not
+  identical work. Answer quality was not compared.
 
 </details>
 
