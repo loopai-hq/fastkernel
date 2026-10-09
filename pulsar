@@ -1,4 +1,5 @@
 #!/bin/sh
+# Modified by Pulsar.
 set -eu
 
 # Linked onto PATH, $0 names the link: follow it to the checkout.

@@ -1,4 +1,4 @@
-# Modified by meowkernels.
+# Modified by Pulsar.
 """HTTP routes, protocol responses and serving-process startup."""
 
 import argparse

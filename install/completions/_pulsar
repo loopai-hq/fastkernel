@@ -1,4 +1,5 @@
 #compdef pulsar
+# Modified by Pulsar.
 
 # Keep the stable install path so an already-running shell survives upgrades.
 typeset -g _splash_completion_source=${${(%):-%x}:a}

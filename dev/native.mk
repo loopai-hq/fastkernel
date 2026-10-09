@@ -1,4 +1,4 @@
-# Modified by meowkernels.
+# Modified by Pulsar.
 ENGINE_TEST_BUILD := $(BUILD)/engine-tests
 ENGINE_TEST_CXXFLAGS := -std=c++20 -O2 -Wall -Wextra -Werror -Iruntime -Idev \
 	$(MACOS_TARGET_FLAG)

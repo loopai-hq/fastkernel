@@ -1,3 +1,4 @@
+# Modified by Pulsar.
 # Keep the stable install path so an already-running shell survives upgrades.
 set -g __pulsar_completion_source (builtin realpath -s -- (status filename))
 

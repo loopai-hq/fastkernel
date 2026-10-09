@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 #include "metal/abi/KernelABI.h"
 #include "metal/kernels/common/gguf_sgmatrix.h"
 #include "metal/kernels/common/rms_inverse.h"

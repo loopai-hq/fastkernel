@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Modified by Pulsar.
 """Build the runtime-only macOS archive and its Homebrew formula."""
 
 import argparse

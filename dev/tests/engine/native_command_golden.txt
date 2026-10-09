@@ -1,3 +1,4 @@
+# Modified by Pulsar.
 # serve-native command lines both sides must agree on, as
 # "<name> | <pulsar serve options> | <arguments after MODEL_DIRECTORY>" lines.
 #

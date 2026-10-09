@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Modified by Pulsar.
 """Serve in the foreground, or connect an installed agent to the local server."""
 
 import argparse

@@ -1,3 +1,4 @@
+# Modified by Pulsar.
 """Immutable program files and writable per-user data, for source or release."""
 
 from pathlib import Path

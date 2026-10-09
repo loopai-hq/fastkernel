@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 #pragma once
 
 // C/Metal ABI constants shared by host and shader compilation. Startup

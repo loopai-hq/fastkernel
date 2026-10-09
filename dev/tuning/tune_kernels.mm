@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 // Offline kernel measurement. Loads an installed model, measures each
 // projection key's tuning candidates (tuning::linearCandidates) against the
 // policy default in runtime/ops through the production encoders, and prints

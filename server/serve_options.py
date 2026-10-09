@@ -1,4 +1,4 @@
-# Modified by meowkernels.
+# Modified by Pulsar.
 """The options `pulsar serve` and the server share: each flag's check, help
 and default, and how the launcher passes a value on to the server.
 

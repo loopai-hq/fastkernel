@@ -1,3 +1,4 @@
+<!-- Modified by Pulsar. -->
 # Upstream model loading
 
 Measurements behind serving MLX and GGUF upstream models directly, taken in

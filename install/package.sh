@@ -1,5 +1,5 @@
 #!/bin/sh
-# Modified by meowkernels.
+# Modified by Pulsar.
 # Build dist/pulsar-VERSION-macos-arm64.tar.gz: a prebuilt package that runs without Xcode.
 # Same layout as Splash's release package; release.json marks it as packaged (install/paths.py).
 # Usage: make all && install/package.sh [VERSION]

@@ -1,4 +1,4 @@
-# Modified by meowkernels.
+# Modified by Pulsar.
 """Tokenizer contract and cached token-level output constraints."""
 
 import threading

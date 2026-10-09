@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 #include "TestChecks.hpp"
 #include "ane/ProgramInstrumentation.hpp"
 #include "engine/RuntimeResources.hpp"

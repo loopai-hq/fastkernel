@@ -1,3 +1,4 @@
+# Modified by Pulsar.
 # Keep the stable install path so an already-running shell survives upgrades.
 case ${BASH_SOURCE[0]} in
     /*) _splash_completion_source=${BASH_SOURCE[0]} ;;

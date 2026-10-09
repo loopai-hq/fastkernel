@@ -1,3 +1,4 @@
+<!-- Modified by Pulsar. -->
 `goldens.json` holds every SHA-256 the weight tests compare against:
 
 - `gguf_dequantization`: upstream GGML's fp32 dequantization of the reference

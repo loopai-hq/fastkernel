@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 #include "metal/EnvSwitch.hpp"
 #include "TestChecks.hpp"
 #include "ops/ExecutionPlans.hpp"

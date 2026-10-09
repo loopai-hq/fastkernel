@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 #include "ProtocolPeer.hpp"
 #include "Q8PageFormatReference.hpp"
 #include "TestChecks.hpp"

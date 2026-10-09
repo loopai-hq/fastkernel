@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 #include "TestChecks.hpp"
 #include "TestModel.hpp"
 #include "TestStderr.hpp"

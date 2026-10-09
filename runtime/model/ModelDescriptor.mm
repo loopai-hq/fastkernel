@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 #include "ModelDescriptor.hpp"
 #include "AffineTarget.hpp"
 #include "GgufImage.hpp"

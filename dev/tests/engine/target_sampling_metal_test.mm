@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 // Target sampling policy against a direct CPU reference.
 //
 // The penalty kernels must rewrite exactly the logits of the penalized lanes'

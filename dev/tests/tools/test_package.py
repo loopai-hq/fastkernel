@@ -1,3 +1,4 @@
+# Modified by Pulsar.
 import contextlib
 import fcntl
 import hashlib

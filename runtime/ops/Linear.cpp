@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 #include "Linear.hpp"
 
 #include "metal/abi/ExecutionGeometry.h"

@@ -1,12 +1,13 @@
 Pulsar
-Copyright 2026 Abhishek Gahlot (meowkernels)
+Copyright 2026 Abhishek Gahlot
 
 Licensed under the Apache License, Version 2.0 (see LICENSE).
 
 Pulsar is built on Splash by Inco AI (https://github.com/incoai/splash),
 also licensed under the Apache License, Version 2.0. Thank you to the Splash
 team at Inco AI for the engine this work stands on. Files we changed from
-Splash say "Modified by meowkernels."
+Splash say "Modified by Pulsar." Full list:
+https://github.com/loopai-hq/pulsar/blob/main/docs/CHANGED-FILES.md
 
 If you redistribute Pulsar or a work derived from it, keep this NOTICE
 file, as section 4(d) of the Apache License requires.

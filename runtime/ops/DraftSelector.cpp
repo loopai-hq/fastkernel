@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 #include "ops/DraftSelector.hpp"
 
 #include "metal/abi/Sampling.h"

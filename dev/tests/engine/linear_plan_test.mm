@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 #include "AffineQ4Fixture.hpp"
 #include "TestBuffers.hpp"
 #include "TestChecks.hpp"

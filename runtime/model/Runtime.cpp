@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 #include "model/Runtime.hpp"
 #include "metal/EnvSwitch.hpp"
 #include "AwakeClock.hpp"

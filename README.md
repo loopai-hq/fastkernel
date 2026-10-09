@@ -1,4 +1,4 @@
-<!-- Modified by meowkernels. (Splash's original README is docs/SPLASH-README.md.) -->
+<!-- Modified by Pulsar. (Splash's original README is docs/SPLASH-README.md.) -->
 <h1 align="center">Pulsar</h1>
 
 <p align="center"><b>The fastest inference engine for Qwen3.8-27B and Qwen3.6-35B-A3B on Apple Silicon.</b><br>
@@ -193,4 +193,5 @@ the NOTICE file and credit Pulsar.
 Thank you to [Inco AI](https://github.com/incoai) for [Splash](https://github.com/incoai/splash), the Apache-2.0 engine
 Pulsar is built on. Pulsar 1.1.4 is built on Splash 1.3.0. Splash's own README:
 [docs/SPLASH-README.md](docs/SPLASH-README.md). Third-party code that Splash ships keeps its own license:
-[THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES). Each file we changed from Splash says "Modified by meowkernels."
+[THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES). Files we changed from Splash say "Modified by Pulsar." Full list:
+[docs/CHANGED-FILES.md](docs/CHANGED-FILES.md).

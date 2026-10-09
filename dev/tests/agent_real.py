@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Modified by Pulsar.
 """Exercise installed coding clients using the production launcher adapter.
 
 No model aliases, replacement prompts, tool filters, synthetic assistant turns,

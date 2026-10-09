@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 // DFlash draft selector against a direct CPU reference: the sharded top-16
 // scan and its reduce must return exactly the sixteen largest logits of every
 // proposal row in (value desc, id asc) order, and the codebook walk must pick

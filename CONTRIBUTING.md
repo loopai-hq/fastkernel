@@ -1,4 +1,4 @@
-<!-- Modified by meowkernels. -->
+<!-- Modified by Pulsar. -->
 # Contributing
 
 Issues are welcome at [github.com/loopai-hq/pulsar](https://github.com/loopai-hq/pulsar/issues):

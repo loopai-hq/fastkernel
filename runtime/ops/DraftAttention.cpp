@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 #include "ops/DraftAttention.hpp"
 
 #include "metal/abi/DraftAttention.h"

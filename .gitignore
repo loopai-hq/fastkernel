@@ -1,4 +1,4 @@
-# Modified by meowkernels.
+# Modified by Pulsar.
 build/
 # BUILD=build-<name> trees (make BUILD=...), the fork's usual layout
 build-*/

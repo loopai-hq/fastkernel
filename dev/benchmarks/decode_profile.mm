@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 // Per-kernel GPU time attribution for the production executor.
 //
 //   decode-profile METALLIB MODEL_ROOT [--prompt-tokens N] [--cycles K]

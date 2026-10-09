@@ -1,0 +1,163 @@
+# Files changed from Splash
+
+Pulsar is built on [Splash](https://github.com/incoai/splash) 1.3.0 by Inco AI. This page lists every file that
+differs from Splash 1.3.0, as `git diff --name-status 1.3.0` against incoai/splash shows them.
+
+Each changed file says "Modified by Pulsar." in a comment at its top. Files marked † can't hold a comment
+(JSON test data), so this list is their notice.
+
+## Changed (117)
+
+- `.gitignore`
+- `CONTRIBUTING.md`
+- `DEVELOPMENT.md`
+- `Makefile`
+- `README.md`
+- `SECURITY.md`
+- `dev/Makefile`
+- `dev/benchmarks/backend_regression.py`
+- `dev/benchmarks/decode_profile.mm`
+- `dev/benchmarks/http_regression.py`
+- `dev/benchmarks/remaining-decode-optimizations.md`
+- `dev/benchmarks/upstream-loading.md`
+- `dev/benchmarks/weights.py`
+- `dev/native.mk`
+- `dev/tests/agent_real.py`
+- `dev/tests/engine/ane_ffn_startup_test.cpp`
+- `dev/tests/engine/dflash_batch_control_metal_test.mm`
+- `dev/tests/engine/draft_selector_metal_test.mm`
+- `dev/tests/engine/engine_memory_plan_test.cpp`
+- `dev/tests/engine/execution_plans_test.cc`
+- `dev/tests/engine/gdn_decode_metal_test.mm`
+- `dev/tests/engine/gguf_rotation_test.mm`
+- `dev/tests/engine/linear_plan_test.mm`
+- `dev/tests/engine/memory_governor_test.cpp`
+- `dev/tests/engine/metal_backend_test.mm`
+- `dev/tests/engine/model_execution_plan_test.cpp`
+- `dev/tests/engine/model_runtime_oracle_test.mm`
+- `dev/tests/engine/native_command_golden.txt`
+- `dev/tests/engine/paged_attention_plan_test.mm`
+- `dev/tests/engine/q4_sgmatrix_metal_test.mm`
+- `dev/tests/engine/runtime_bootstrap_test.mm`
+- `dev/tests/engine/runtime_status_test.cpp`
+- `dev/tests/engine/status_golden.json` †
+- `dev/tests/engine/target_sampling_metal_test.mm`
+- `dev/tests/fixtures/weight-goldens/README.md`
+- `dev/tests/install/test_clients.py`
+- `dev/tests/install/test_completion.py`
+- `dev/tests/install/test_models.py`
+- `dev/tests/installer_fixtures.py`
+- `dev/tests/server_fixtures.py`
+- `dev/tests/smoke_real.py`
+- `dev/tests/tools/test_agent_real.py`
+- `dev/tests/tools/test_backend_regression.py`
+- `dev/tests/tools/test_build_identity.py`
+- `dev/tests/tools/test_http_regression.py`
+- `dev/tests/tools/test_kernel_identity.py`
+- `dev/tests/tools/test_makefile.py`
+- `dev/tests/tools/test_package.py`
+- `dev/tests/tools/test_packaged_server.py`
+- `dev/tests/tools/test_smoke_real.py`
+- `dev/tools/install.sh`
+- `dev/tools/kernel_identity.py`
+- `dev/tools/package.py`
+- `dev/tuning/tune_kernels.mm`
+- `install/catalog.py`
+- `install/completions/_splash` → `install/completions/_pulsar` (renamed)
+- `install/completions/models`
+- `install/completions/splash.bash` → `install/completions/pulsar.bash` (renamed)
+- `install/completions/splash.fish` → `install/completions/pulsar.fish` (renamed)
+- `install/launcher.py`
+- `install/paths.py`
+- `splash` → `pulsar` (renamed)
+- `runtime/engine/AneFfnStartup.cpp`
+- `runtime/engine/AneFfnStartup.hpp`
+- `runtime/engine/Bootstrap.mm`
+- `runtime/engine/Engine.cpp`
+- `runtime/engine/Engine.hpp`
+- `runtime/engine/MemoryPlan.cpp`
+- `runtime/engine/MemoryPlan.hpp`
+- `runtime/engine/NativeArguments.hpp`
+- `runtime/engine/RuntimeResources.mm`
+- `runtime/main.mm`
+- `runtime/metal/BackendInstrumentation.hpp`
+- `runtime/metal/CommandGraph.hpp`
+- `runtime/metal/MetalBackend.hpp`
+- `runtime/metal/MetalBackend.mm`
+- `runtime/metal/abi/DraftAttention.h`
+- `runtime/metal/abi/ExecutionGeometry.h`
+- `runtime/metal/abi/GDN.h`
+- `runtime/metal/abi/Sampling.h`
+- `runtime/metal/kernels/common/paged_attention_tile.h`
+- `runtime/metal/kernels/common/q4_mpp_tiles.h`
+- `runtime/metal/kernels/decode/draft.metal`
+- `runtime/metal/kernels/decode/gdn.metal`
+- `runtime/metal/kernels/decode/paged_attention.metal`
+- `runtime/metal/kernels/decode/sampling.metal`
+- `runtime/metal/kernels/shared/normalization.metal`
+- `runtime/model/DFlashDraft.cpp`
+- `runtime/model/DFlashDraft.hpp`
+- `runtime/model/Model.hpp`
+- `runtime/model/ModelDescriptor.mm`
+- `runtime/model/ModelFactory.hpp`
+- `runtime/model/QwenTarget.cpp`
+- `runtime/model/QwenTarget.hpp`
+- `runtime/model/Runtime.cpp`
+- `runtime/model/Runtime.hpp`
+- `runtime/model/RuntimeArenas.cpp`
+- `runtime/model/RuntimeArenas.hpp`
+- `runtime/ops/DraftAttention.cpp`
+- `runtime/ops/DraftAttention.hpp`
+- `runtime/ops/DraftSelector.cpp`
+- `runtime/ops/DraftSelector.hpp`
+- `runtime/ops/GDN.cpp`
+- `runtime/ops/GDN.hpp`
+- `runtime/ops/Linear.cpp`
+- `runtime/ops/Linear.hpp`
+- `runtime/ops/LinearGguf.cpp`
+- `runtime/ops/Normalization.cpp`
+- `runtime/ops/Normalization.hpp`
+- `runtime/ops/PagedAttention.cpp`
+- `runtime/ops/RoPE.cpp`
+- `runtime/ops/Sampling.cpp`
+- `runtime/ops/Sampling.hpp`
+- `server/constraints.py`
+- `server/frontend.py`
+- `server/serve_options.py`
+- `server/server.py`
+
+## Added in Pulsar (28)
+
+- `.claude/skills/pulsar/SKILL.md`
+- `NOTICE`
+- `data/README.md`
+- `data/head-ranked.u32`
+- `dev/tests/engine/prompt_lookup_test.cpp`
+- `dev/tests/engine/wide_row_invariance_metal_test.mm`
+- `docs/BENCHMARKS.md`
+- `docs/CHANGED-FILES.md`
+- `docs/SPLASH-README.md`
+- `docs/SWITCHES.md`
+- `docs/WHATS-INSIDE.md`
+- `docs/media/code-edit.mp4`
+- `docs/media/code-edit.webp`
+- `docs/media/galaxy-app.mp4`
+- `docs/media/galaxy-app.webp`
+- `docs/media/lithos-edit.mp4`
+- `docs/media/lithos-edit.webp`
+- `docs/media/lithos-tip.mp4`
+- `docs/media/lithos-tip.webp`
+- `docs/media/speed-race.mp4`
+- `docs/media/speed-race.webp`
+- `install/package.sh`
+- `runtime/metal/EnvSwitch.hpp`
+- `runtime/metal/HostPhase.hpp`
+- `runtime/metal/kernels/common/gdn_value_parts.h`
+- `runtime/metal/kernels/common/gdn_wide.h`
+- `runtime/metal/kernels/decode/linear_q4_split.metal`
+- `runtime/model/PromptLookup.hpp`
+
+## Removed (2)
+
+- `.github/workflows/ci.yml`
+- `.github/workflows/model-catalog.yml`

@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 #include "engine/Bootstrap.hpp"
 #include "StderrLine.hpp"
 #include "model/RuntimeArenas.hpp"

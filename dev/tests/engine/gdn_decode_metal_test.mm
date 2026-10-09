@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 // GDN verify decode and commit kernels against a direct CPU reference: the
 // four-tap convolution with SiLU, the q/k RMS norms, the gates, the eight-row
 // delta-rule recurrence over the fp32 state, the gated RMSNorm of the

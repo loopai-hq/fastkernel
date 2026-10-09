@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 #include "metal/abi/KernelABI.h"
 #include "metal/kernels/common/split_reduce.h"
 

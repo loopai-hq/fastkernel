@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 // Pulsar's split-K decode projections (restored from Pulsar 1.0.0;
 // Splash deleted its Split32/Split64 tiles in 225fb96). The tile and the
 // kernels below are 1.0.0's source, byte for byte, but for the parameter

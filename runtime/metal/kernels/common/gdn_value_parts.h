@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 #pragma once
 
 // Pulsar's GDN value parts (SPLASH_GDN_VALUE_PARTS=4, ops/GDN.cpp), ported

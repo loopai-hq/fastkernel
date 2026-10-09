@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 #include "metal/kernels/common/lane_bindings.h"
 #include "metal/kernels/common/paged_attention_tile.h"
 

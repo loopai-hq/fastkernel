@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 // Pulsar wide prompt lookup, row invariance at the kernel level: a wide lookup
 // verifies one request's 16 or 32 rows as 2 or 4 lanes, and each row must
 // keep the bytes the 8-row verify gives it. For each core class's planner

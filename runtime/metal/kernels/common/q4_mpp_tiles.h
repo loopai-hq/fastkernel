@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 #pragma once
 
 #include "metal/abi/KernelABI.h"

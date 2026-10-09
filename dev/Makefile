@@ -1,3 +1,4 @@
+# Modified by Pulsar.
 # Holds the hash of the development requirements last installed.
 DEV_STAMP = $(VENV)/.dev-requirements-installed
 RELEASE_VERSION ?= $(shell git describe --tags --always)

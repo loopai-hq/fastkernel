@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 #pragma once
 
 #include "metal/kernels/common/gdn_value_parts.h"

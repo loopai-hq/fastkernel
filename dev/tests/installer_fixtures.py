@@ -1,3 +1,4 @@
+# Modified by Pulsar.
 """What the installer tests share: model and draft repositories, selections,
 Hub errors, and FakeHub, the stand-in for the Hugging Face Hub that the
 upstream and GGUF tests install from. The legacy package tests

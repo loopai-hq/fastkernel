@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 #pragma once
 
 // Shared Qwen prefill/decode scratch layouts and allocation owners.

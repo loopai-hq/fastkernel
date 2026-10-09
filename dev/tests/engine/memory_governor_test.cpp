@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 #include "TestChecks.hpp"
 #include "TestMetalMemory.hpp"
 #include "TestModel.hpp"

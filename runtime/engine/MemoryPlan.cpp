@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 #include "engine/MemoryPlan.hpp"
 #include "Checked.hpp"
 #include "engine/Json.hpp"

@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 #import "MetalBackend.hpp"
 #include "AwakeClock.hpp"
 #include "CommandWatchdog.hpp"

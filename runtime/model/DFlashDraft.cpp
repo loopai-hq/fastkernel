@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 #include "DFlashDraft.hpp"
 #include "Checked.hpp"
 #include "DraftCheckpoint.hpp"

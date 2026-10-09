@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 #include "model/QwenTarget.hpp"
 
 #include "model/Qwen3_6Moe.hpp"

@@ -1,4 +1,4 @@
-<!-- Modified by meowkernels. -->
+<!-- Modified by Pulsar. -->
 # Security
 
 Please report vulnerabilities privately to the maintainers of

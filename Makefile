@@ -1,3 +1,4 @@
+# Modified by Pulsar.
 XCRUN := xcrun
 CXX := $(XCRUN) -sdk macosx clang++
 METAL := $(XCRUN) -sdk macosx metal

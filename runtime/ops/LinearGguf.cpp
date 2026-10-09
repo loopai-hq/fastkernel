@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 // GGUF projections: plan policy and dispatch (kernels/shared/gguf_linear.metal,
 // kernels/decode/linear_gguf_sgmatrix.metal).
 #include "Linear.hpp"

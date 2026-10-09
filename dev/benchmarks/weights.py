@@ -1,3 +1,4 @@
+# Modified by Pulsar.
 """The weight images two builds load from one model, compared by their bytes.
 
 A build's engine-tests/weight-digests loads a model as its engine does and

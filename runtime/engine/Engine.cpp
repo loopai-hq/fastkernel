@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 #include "engine/Engine.hpp"
 
 #include <algorithm>

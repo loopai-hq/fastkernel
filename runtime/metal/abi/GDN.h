@@ -1,3 +1,4 @@
+// Modified by Pulsar.
 #pragma once
 
 // Parameter layouts shared by host dispatch code and Metal kernels.

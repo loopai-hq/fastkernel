@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Modified by Pulsar.
 """Compare the AIR of kernels in two Metal libraries.
 
 Run as ``python dev/tools/kernel_identity.py BASELINE CANDIDATE [--match

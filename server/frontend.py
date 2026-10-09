@@ -1,3 +1,4 @@
+# Modified by Pulsar.
 """Prepare API requests for generation and manage Responses history."""
 
 import hashlib

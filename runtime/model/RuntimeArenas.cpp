@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 #include "model/RuntimeArenas.hpp"
 
 #include "metal/EnvSwitch.hpp"

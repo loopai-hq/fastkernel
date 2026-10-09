@@ -1,4 +1,4 @@
-<!-- Modified by meowkernels: Splash 1.3.0's README, links adjusted for docs/. -->
+<!-- Modified by Pulsar: Splash 1.3.0's README, links adjusted for docs/. -->
 # Splash
 
 [![CI](https://github.com/incoai/splash/actions/workflows/ci.yml/badge.svg)](https://github.com/incoai/splash/actions/workflows/ci.yml)

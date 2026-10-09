@@ -1,3 +1,4 @@
+// Modified by Pulsar.
 // Prism ML's input rotation (kernels/shared/gguf_rotation.metal): gguf_rotate's H (D x) and the rotated PQ2_0
 // token gather's D (H r) are bitwise the bf16 rounding of the fp32 butterflies in source order, which lie within
 // one bf16 step of the fp64 transform.

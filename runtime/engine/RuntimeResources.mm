@@ -1,4 +1,4 @@
-// Modified by meowkernels.
+// Modified by Pulsar.
 #include "engine/RuntimeResources.hpp"
 #include "AwakeClock.hpp"
 #include "Checked.hpp"

@@ -1,4 +1,5 @@
 #!/bin/sh
+# Modified by Pulsar.
 # Splash private-test installer for Apple Silicon Macs.
 #
 #   export SPLASH_TOKEN=hf_...

@@ -1,4 +1,5 @@
 #!/bin/sh
+# Modified by Pulsar.
 # Print local completion candidates; the optional prefix is literal text.
 set -eu
 
