@@ -56,7 +56,7 @@ draft model, its default).
 <p align="center"><sub>Qwen3.8-27B 4-bit on an M5 Max, one engine's server per pane, greedy answers (2026-10-07). Real-time
 replays of measured token timings.</sub></p>
 
-> **Jump to:** [How fast?](#m5-max-128-gb) · [What's new in 1.1.5](#whats-new-in-115) · [Requirements](#requirements) ·
+> **Jump to:** [How fast?](#m5-max-128-gb) · [What's new in 1.1.6](#whats-new-in-116) · [Requirements](#requirements) ·
 > [Quick start](#quick-start) · [What's different](#whats-different-from-splash) · [Models](#models-on-hugging-face) ·
 > [Switches](docs/SWITCHES.md) · [All the numbers](docs/BENCHMARKS.md)
 
@@ -135,11 +135,13 @@ from short chat to a 32K-token agent task (greedy, 2026-10-10).
 
 Full numbers and how we measured: [docs/BENCHMARKS.md](docs/BENCHMARKS.md)
 
-## What's new in 1.1.5
+## What's new in 1.1.6
 
-Same answers as 1.1.4, with slightly faster gate/up kernels and sturdier GDN buffer checks.
+Long prompts write faster: **6.9% faster** on a 32K-token agent task with Qwen3.8-27B, **3.6%** with
+Qwen3.6-35B-A3B, and prompts are read 1.7% faster (M5 Max, 2026-10-10). The Neural Engine split calibrates more
+reliably at startup; the first start after installing spends about 6 s on it.
 
-**Download and source.** Pulsar 1.1.5 ships as a ready-to-run download, the latest Pulsar. This repository holds the
+**Download and source.** Pulsar 1.1.6 ships as a ready-to-run download, the latest Pulsar. This repository holds the
 Apache-2.0 source of Pulsar 1.1.4, which builds and runs as before.
 
 ## Requirements
@@ -163,13 +165,13 @@ Mac. Then put `SPLASH_TEXT_ONLY=1` in front of the serve command. It skips the p
 
 For Qwen3.6-35B-A3B, run `./pulsar serve --model incoai/Qwen3.6-35B-A3B-Splash`, without `SPLASH_DRAFT_HEAD_IDS`.
 
-### Download Pulsar 1.1.5 (latest, no Xcode)
+### Download Pulsar 1.1.6 (latest, no Xcode)
 
-Download `pulsar-1.1.5-macos-arm64.tar.gz` from
+Download `pulsar-1.1.6-macos-arm64.tar.gz` from
 [Releases](https://github.com/loopai-hq/pulsar/releases/latest). Then unpack it and start the server:
 
 ```bash
-tar -xzf pulsar-1.1.5-macos-arm64.tar.gz && cd pulsar
+tar -xzf pulsar-1.1.6-macos-arm64.tar.gz && cd pulsar
 SPLASH_DRAFT_HEAD_IDS=$PWD/data/head-ranked.u32 ./pulsar serve --model incoai/Qwen3.8-27B-Splash
 ```
 
@@ -243,7 +245,7 @@ LICENSE, NOTICE and THIRD_PARTY_NOTICES. If you build on Pulsar, keep the NOTICE
 called fastkernel until version 1.1.3.
 
 Thank you to [Inco AI](https://github.com/incoai) for [Splash](https://github.com/incoai/splash), the Apache-2.0 engine
-Pulsar is built on, and for the DFlash 2 draft models and Splash model packages Pulsar runs. Pulsar 1.1.5 is built on
+Pulsar is built on, and for the DFlash 2 draft models and Splash model packages Pulsar runs. Pulsar 1.1.6 is built on
 Splash 1.3.0. Splash's own README: [docs/SPLASH-README.md](docs/SPLASH-README.md). Thank you also to the Qwen team for
 the Qwen models and to mlx-community for the 4-bit conversions. Third-party code that Splash ships keeps its own
 license: [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES). Files we changed from Splash say "Modified by Pulsar."; the
