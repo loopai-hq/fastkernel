@@ -5,7 +5,7 @@
 
 <p align="center"><b>The fastest engine we have measured for Qwen3.8-27B on Apple silicon (M5 Max)</b>, a fork of Inco AI's
 <a href="https://github.com/incoai/splash">Splash</a> 1.3.0.<br>
-Up to 477 tok/s editing code · 1.44× faster than lithos-metal 0.1.2 (official release) · 1.11× Splash 1.3.0<br>
+Up to 477 tok/s editing code · 1.44× faster than lithos-metal 0.1.2 (official release) · 1.13× Splash 1.3.0<br>
 every token still checked by the full model</p>
 
 <p align="center">
@@ -113,17 +113,17 @@ Pulsar vs other engines:
 | Engine | Guesses ahead with | Its speed | Pulsar's speed | Pulsar is |
 |---|---|---:|---:|---|
 | lithos-metal 0.1.2 | DSpark draft head | 75.7 | 108.3 | **1.44× faster** |
-| Splash 1.3.0 | DFlash 2 draft model | 89.0 | 99.2 | **1.11× faster** |
-| MTPLX | MTP | 65.7 | 118.2 | **1.80× faster** |
-| AX Engine | MTP | 38.3 | 119.6 | **3.12× faster** |
-| MLX-LM | no draft model (its default) | 30.9 | 114.9 | **3.72× faster** |
-| llama.cpp | no draft model (its default) | 26.7 | 110.7 | **4.14× faster** |
+| Splash 1.3.0 | DFlash 2 draft model | 86.5 | 98.6 | **1.13× faster** |
+| MTPLX | MTP | 64.9 | 125.0 | **1.93× faster** |
+| AX Engine | MTP | 40.1 | 131.0 | **3.27× faster** |
+| MLX-LM | no draft model (its default) | 30.0 | 115.0 | **3.84× faster** |
+| llama.cpp | no draft model (its default) | 27.1 | 121.7 | **4.49× faster** |
 
-Speeds are in tok/s (tokens per second). The lithos-metal row is Pulsar 1.1.5 (2026-10-10); the other rows are Pulsar 1.1.0 (2026-10-07). MTP is the model's own built-in guesser. Each pair ran in one session, taking
+Speeds are in tok/s (tokens per second). All rows are Pulsar 1.1.5 (2026-10-10). MTP is the model's own built-in guesser. Each pair ran in one session, taking
 turns on the same prompts: 12 prompts against Splash 1.3.0 (chat, math, code, a code file, a 32K-token agent task, a
 multilingual prompt and two long-context prompts), the 6 standard prompts against the others (5 greedy prompts against
-AX Engine). In chat, Pulsar 1.1.0 writes
-76.7 tok/s, 1.12× Splash 1.3.0's 68.5.
+AX Engine). In chat, Pulsar 1.1.5 writes
+74.9 tok/s, 1.13× Splash 1.3.0's 66.4.
 
 Sent again, a 2,247-token prompt starts in 0.1 s: Pulsar 1.1.0 reuses its prompt cache.
 

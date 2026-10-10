@@ -86,6 +86,45 @@ Decode tok/s = (completion tokens − 1) / (last − first streamed chunk).
 
 </details>
 
+### Pulsar 1.1.5 vs Splash 1.3.0, MTPLX, AX Engine, MLX-LM and llama.cpp
+
+Each engine ran against the Pulsar 1.1.5 release package, one pair per session, with the same prompts, seeds, settings
+and engine versions as the Pulsar 1.1.0 runs below. Against Splash 1.3.0, one server ran at a time in alternating blocks
+(ABBA, 8 blocks, the 12 prompts). Against the others, both servers ran together and took turns on each prompt: the 6
+standard prompts sampled, or 5 of them greedy for AX Engine.
+
+| Engine | Answers | Its tok/s | Pulsar 1.1.5 tok/s | Pulsar 1.1.5 is |
+|---|---|---:|---:|---|
+| Splash 1.3.0 (DFlash 2) | sampled, 12 prompts | 86.5 | 98.6 | **1.13× faster** (95% range 1.09–1.17×) |
+| MTPLX 2.12.0 (Bare-Speed 4-bit + MTP) | sampled | 64.9 | 125.0 | **1.93× faster** (95% range 1.70–2.10×) |
+| AX Engine 7.5.7 (MXFP4 + MTP) | greedy | 40.1 | 131.0 | **3.27× faster** (95% range 2.91–3.67×) |
+| MLX-LM 0.31.3 (4-bit) | sampled | 30.0 | 115.0 | **3.84× faster** (95% range 3.04–4.63×) |
+| llama.cpp 0.5.0 (Q4_K_M GGUF) | sampled | 27.1 | 121.7 | **4.49× faster** (95% range 3.53–5.40×) |
+
+Conditions: 2026-10-10, 03:59–06:28 IST, on AC power. Every block started with the Mac at thermal state "nominal".
+In chat, Pulsar 1.1.5 writes 74.9 tok/s, 1.13× Splash 1.3.0's 66.4.
+
+<details>
+<summary>Details</summary>
+
+- Splash row: mean of per-prompt means; the ratio is the geometric mean of matched prompt-and-seed pairs, with a 95%
+  range clustered by seed block. Other rows: mean of per-request client decode speeds, ratio of those means, with a
+  95% bootstrap range over prompts.
+- Pulsar 1.1.5: the release package (sha256 6a01d6c4…) with the Quick start flags.
+
+Per prompt, in tok/s (Pulsar 1.1.5 / the other engine, mean of 2 seeds):
+
+| Prompt | vs MTPLX | vs AX Engine | vs MLX-LM | vs llama.cpp |
+|---|---:|---:|---:|---:|
+| chat | 77.5 / 49.7 | 85.6 / 33.0 | 74.7 / 30.4 | 77.3 / 27.2 |
+| math | 173.9 / 79.0 | 169.6 / 54.9 | 163.6 / 31.1 | 169.8 / 28.4 |
+| code | 167.5 / 79.4 | 168.6 / 52.5 | 146.4 / 30.8 | 158.4 / 28.1 |
+| code file | 140.2 / 70.3 | 136.0 / 34.4 | 122.9 / 30.0 | 137.8 / 27.7 |
+| agent (32K prompt) | 91.2 / 47.5 | | 90.4 / 26.0 | 89.8 / 23.5 |
+| multilingual | 99.7 / 63.7 | 95.3 / 25.5 | 91.7 / 31.4 | 96.8 / 27.7 |
+
+</details>
+
 ### Sampled answers: Pulsar 1.1.0 vs Splash 1.3.0 and Pulsar 1.0.0, 12 prompts
 
 Pulsar 1.1.0 is this release, built on Splash 1.3.0. All three servers ran at the same time, taking turns on each
