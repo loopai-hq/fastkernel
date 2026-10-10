@@ -137,9 +137,20 @@ Full numbers and how we measured: [docs/BENCHMARKS.md](docs/BENCHMARKS.md)
 
 ## What's new in 1.1.6
 
-Long prompts write faster: **6.9% faster** on a 32K-token agent task with Qwen3.8-27B, **3.6%** with
-Qwen3.6-35B-A3B, and prompts are read 1.7% faster (M5 Max, 2026-10-10). The Neural Engine split calibrates more
-reliably at startup; the first start after installing spends about 6 s on it.
+Long prompts write faster, and prompts are read faster. Measured against 1.1.5 on the same M5 Max, taking turns on
+the same prompts (greedy, 2026-10-10):
+
+| | Pulsar 1.1.5 | Pulsar 1.1.6 | 1.1.6 is |
+|---|---:|---:|---|
+| Qwen3.8-27B, 32K-token agent task | 77.9 tok/s | 83.3 tok/s | **6.9% faster** |
+| Qwen3.8-27B, a code file | 101.7 tok/s | 104.3 tok/s | 2.6% faster |
+| Qwen3.8-27B, 13 prompts, average | 101.6 tok/s | 102.4 tok/s | 0.8% faster |
+| Qwen3.6-35B-A3B, 32K-token agent task | 135.1 tok/s | 139.9 tok/s | **3.6% faster** |
+| Reading a 32K-token prompt | 40.6 s | 40.1 s | 1.2% faster |
+| Reading an 8K-token prompt | 9.12 s | 8.92 s | 2.2% faster |
+
+Answers match 1.1.5 on all 52 Qwen3.8-27B requests in this run. The Neural Engine split calibrates more reliably at
+startup; the first start after installing spends about 6 s on it.
 
 **Download and source.** Pulsar 1.1.6 ships as a ready-to-run download, the latest Pulsar. This repository holds the
 Apache-2.0 source of Pulsar 1.1.4, which builds and runs as before.
